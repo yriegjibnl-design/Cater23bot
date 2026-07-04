@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 # تنظیمات اصلی ربات از طریق محیط سرور (Railway Variables)
 # ==========================================
 # در پنل Railway دو متغیر با نام‌های BOT_TOKEN و ADMIN_ID بسازید
-BOT_TOKEN = os.getenv("8894117383:AAFGeDmC1lnY_LoFaah7zTAX7NjriIb2-Tc")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFGeDmC1lnY_LoFaah7zTAX7NjriIb2-Tc")
 INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
 
 logging.basicConfig(
