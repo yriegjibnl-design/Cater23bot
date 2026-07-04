@@ -18,13 +18,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_FILE = "/app/data/games.db"
+# آدرس اصلاح‌شده برای ماندگاری دائمی دیتابیس در محیط سرور
+DB_FILE = "games.db"
 
 # ==========================================
 # ۱. راه‌اندازی دیتابیس
 # ==========================================
 def init_db():
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -80,6 +80,16 @@ SHOP_TITLES = {
     "t3": {"name": "⚔️ گلادیاتور اعظم", "cost": 2000},
     "t4": {"name": "🧛 روح تاریک نبرد", "cost": 2500},
     "t5": {"name": "🦅 ققنوس جاودان", "cost": 4000}
+}
+
+# جملات ملوکانه برای نتیجه تاس‌ها
+DICE_MOTIVATIONS = {
+    6: ["🔥 **شــــــــــش ملوووووووک! میدان نبرد به آتش کشیده شد!**", "😎 شش چرخ روزگار به کامت چرخید! فوق‌العاده بود!"],
+    5: ["⚡ **بسیار عالی! شانس با تو همراهه جنگجو!**", "💪 یک پرتاب قدرتمند و بی‌نقص!"],
+    4: ["👍 **خوب و مطمئن! قدم به قدم به پیروزی نزدیک‌تر میشی.**", "🛡️ پرتابی محکم برای حفظ موقعیت!"],
+    3: ["😐 **معمولی و متوسط... می‌تونست خیلی بهتر باشه!**", "💫 شانس وسط زمین ایستاده، پرتاب بعدی رو محکم‌تر بزن!"],
+    2: ["🤏 **ای وای! بوی بدشانسی میاد...**", "🌪️ تاس موافقی نبود، ولی غمت نباشه جنگجو!"],
+    1: ["💀 **تاس کفتار گریبان‌گیرت شد! شانس فرار کرد!**", "❌ سقوط آزاد! تاس کفتار تمام نقشه‌هات رو نقش بر آب کرد!"]
 }
 
 def calculate_rank(score):
@@ -138,7 +148,7 @@ def get_top_players():
 USER_COOLDOWNS = {}
 COOLDOWN_TIME = 1.5
 ADMIN_STATES = {}
-PV_DUEL_STATES = {}  # برای ذخیره وضعیت انتظار شماره حریف در پیوی
+PV_DUEL_STATES = {}
 
 async def check_cooldown(update: Update) -> bool:
     if not update.message: return False
@@ -188,7 +198,14 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif dice_value == 1: score_gained, is_win = -15, False
     
     result = update_stats(user_id, score_gained, is_win)
-    response = f"👤 **مبارز:** {user_data['username']}{title_tag}\n🎲 **تاس:** 〖 **{dice_value}** 〗\n🏆 **امتیاز:** {score_gained:+} XP"
+    motivation = random.choice(DICE_MOTIVATIONS[dice_value])
+    
+    response = (
+        f"👤 **مبارز:** {user_data['username']}{title_tag}\n"
+        f"🎲 **تاس:** 〖 **{dice_value}** 〗\n"
+        f"📢 {motivation}\n"
+        f"🏆 **امتیاز:** {score_gained:+} XP"
+    )
     if result["rank_changed"]: response += f"\n🎖️ **ارتقا رتبه به: {result['new_rank']}**"
     await update.message.reply_markdown(response)
 
@@ -249,7 +266,6 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title_tag = f" ({player['title']})" if player['title'] != 'بدون لقب' else ""
         leaderboard_text += f"{medals} {index + 1}. **{player['username']}**{title_tag}\n  Rank: {player['rank']} | ⭐ {player['score']} XP\n\n"
     
-    # دکمه شیشه‌ای برای دوئل در پیوی
     keyboard = [[InlineKeyboardButton("⚔️ دوئل با برترین‌ها (مخصوص پیوی)", callback_data="pv_duel_start")]]
     await update.message.reply_markdown(leaderboard_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -259,17 +275,15 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     user_id = query.from_user.id
 
-    # --- شروع فرآیند دوئل پیوی ---
     if query.data == "pv_duel_start":
         if query.message.chat.type != "private":
-            await query.answer("❌ این قابلیت فقط در پیوی (کامپکت خصوصی با ربات) کار می‌کند!", show_alert=True)
+            await query.answer("❌ این قابلیت فقط در پیوی (خصوصی با ربات) کار می‌کند!", show_alert=True)
             return
         await query.answer()
         PV_DUEL_STATES[user_id] = "WAITING_FOR_TARGET_NUMBER"
         await query.message.reply_text("🎯 **لطفاً شماره بازیکن مورد نظر خود را از لیست بالا وارد کنید (مثلاً عدد 1 برای نفر اول):**")
         return
 
-    # --- پذیرش یا رد دوئل در پیوی توسط حریف ---
     if data[0] == "pvduel":
         action = data[1]
         p1_id = int(data[2])
@@ -292,7 +306,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: await context.bot.send_message(chat_id=p1_id, text="⚔️ **حریف درخواست را قبول کرد! نبرد آغاز شد...**")
             except: pass
 
-            # گلچین نام‌ها
             conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
             p1_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()['username']
             p2_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()['username']
@@ -300,26 +313,21 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             p1_total, p2_total = 0, 0
 
-            # راندها فیکس روی ۳ راند برای پیوی
-            # --- راند ۱ تا ۳ بازیکن اول ---
             try: await context.bot.send_message(chat_id=p1_id, text=f"🎲 پرتاب ۳ تاس شما ({p1_name}):")
             except: pass
             try: await context.bot.send_message(chat_id=p2_id, text=f"🎲 پرتاب ۳ تاس حریف ({p1_name}) در حال ارسال برای شما:")
             except: pass
 
             for _ in range(3):
-                # پرتاب برای پیوی نفر اول
                 try:
                     d_msg = await context.bot.send_dice(chat_id=p1_id)
                     p1_total += d_msg.dice.value
-                    # ارسال همان مقدار تاس برای پیوی نفر دوم جهت تماشا
                     await context.bot.send_message(chat_id=p2_id, text=f"تاس {p1_name}: 〖 **{d_msg.dice.value}** 〗")
                 except: pass
                 await asyncio.sleep(0.5)
 
             await asyncio.sleep(3.5)
 
-            # --- راند ۱ تا ۳ بازیکن دوم ---
             try: await context.bot.send_message(chat_id=p2_id, text=f"🎲 حالا پرتاب ۳ تاس شما ({p2_name}):")
             except: pass
             try: await context.bot.send_message(chat_id=p1_id, text=f"🎲 پرتاب ۳ تاس حریف ({p2_name}) در حال ارسال برای شما:")
@@ -329,14 +337,12 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     d_msg = await context.bot.send_dice(chat_id=p2_id)
                     p2_total += d_msg.dice.value
-                    # ارسال برای پیوی نفر اول جهت تماشا
                     await context.bot.send_message(chat_id=p1_id, text=f"تاس {p2_name}: 〖 **{d_msg.dice.value}** 〗")
                 except: pass
                 await asyncio.sleep(0.5)
 
             await asyncio.sleep(3.5)
 
-            # محاسبه و اعلام کل نتیجه در پیوی هردو
             if p1_total > p2_total:
                 res_p1 = f"👑 **شما پیروز شدید! ({p1_total} vs {p2_total})** 🎉 (+40 XP)"
                 res_p2 = f"💀 **شما باختید! ({p2_total} vs {p1_total})** (-20 XP)"
@@ -356,7 +362,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
             return
 
-    # --- هندل کالبک دوئل‌های گروهی سنتی ---
     if data[0] == "gduel":
         action = data[1]
         if action == "no":
@@ -402,12 +407,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else: txt = "🤝 **مساوی!**"
             await context.bot.send_message(chat_id=chat_id, text=txt)
 
-    # مدیریت دکمه‌های ادمین و خرید لقب
     if data[0] == "admin": await admin_buttons(update, context)
     if data[0] == "buy": await shop_callback(update, context)
 
 # ==========================================
-# ۵. مانیتورینگ پیام‌ها، چت‌ها و ورودی‌های متنی عددی
+# ۵. مانیتورینگ پیام‌ها و ورودی‌های متنی
 # ==========================================
 async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -417,7 +421,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     get_or_create_user(user_id, p_name)
 
-    # --- هندل کردن دریافت شماره بازیکن برای دوئل پیوی ---
     if user_id in PV_DUEL_STATES and PV_DUEL_STATES[user_id] == "WAITING_FOR_TARGET_NUMBER":
         del PV_DUEL_STATES[user_id]
         try:
@@ -440,7 +443,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             await update.message.reply_text("❌ شوخی قشنگی بود ولی نمی‌توانی به خودت درخواست دوئل بدهی!")
             return
 
-        # ارسال پیامک درخواست به پیوی حریف
         keyboard = [[
             InlineKeyboardButton("⚔️ قبول نبرد", callback_data=f"pvduel_yes_{user_id}_{target_id}"),
             InlineKeyboardButton("🏳️ رد درخواست", callback_data=f"pvduel_no_{user_id}_{target_id}")
@@ -457,7 +459,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             await update.message.reply_text("❌ متاسفانه نتوانستم به پیوی حریف پیام بفرستم! (شاید ربات را بلاک کرده یا استارت نزده است)")
         return
 
-    # کنترل پنل ادمین
     if user_id in ADMIN_STATES:
         state = ADMIN_STATES[user_id]
         if state == "WAITING_FOR_BROADCAST":
@@ -577,7 +578,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|admin_|buy_)"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_messages_and_inputs))
 
-    print("🚀 ربات با قابلیت نبرد پیوی متقابل (PvP) آنلاین شد...")
+    print("🚀 ربات با دیتابیس ثابت و متن‌های انگیزشی ملوکانه آنلاین شد...")
     application.run_polling()
 
 if __name__ == "__main__":
