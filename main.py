@@ -10,8 +10,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 # ==========================================
 # تنظیمات اصلی ربات از طریق محیط سرور
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFGeDmC1lnY_LoFaah7zTAX7NjriIb2-Tc")
-INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_DEFAULT_TOKEN_IF_NOT_SET")
+INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
@@ -129,15 +129,16 @@ def update_stats(telegram_id, score_gained, is_win):
 
 def get_top_players():
     conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-    top_users = cursor.execute('SELECT username, rank, title, score FROM users ORDER BY score DESC LIMIT 10').fetchall()
+    top_users = cursor.execute('SELECT telegram_id, username, rank, title, score FROM users ORDER BY score DESC LIMIT 10').fetchall()
     conn.close(); return top_users
 
 # ==========================================
-# ۲. سیستم دوئل خودکار و تاییدیه ریپلای
+# ۲. سیستم کنترل‌ها و وضعیت‌های فعال بازی
 # ==========================================
 USER_COOLDOWNS = {}
 COOLDOWN_TIME = 1.5
 ADMIN_STATES = {}
+PV_DUEL_STATES = {}  # برای ذخیره وضعیت انتظار شماره حریف در پیوی
 
 async def check_cooldown(update: Update) -> bool:
     if not update.message: return False
@@ -160,10 +161,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "⚔️ 🔴 **لیست فرمان‌های نبرد کلوب تاس** 🔴 ⚔️\n\n"
         "🎲 `/dice` — پرتاب تاس شانسی انفرادی\n"
-        "⚔️ `/duel [تعداد راند]` — **دوئل رگباری و خودکار!** (روی پیام حریف ریپلای کن. مثال: `/duel 3`)\n"
+        "⚔️ `/duel [راند]` — **دوئل رگباری در گروه** (روی پیام حریف ریپلای کن)\n"
         "🏪 `/shop` — بازارچه لقب‌های حماسی\n"
         "👤 `/profile` — نمایش رنک و کارنامه جنگی\n"
-        "🏆 `/top` — جدول ۱۰ مبارز برتر\n"
+        "🏆 `/top` — جدول ۱۰ مبارز برتر و دوئل پیوی\n"
     )
     if is_user_admin(update.effective_user.id): help_text += "⚙️ `/admin` — کنترل پنل مدیریت"
     await update.message.reply_markdown(help_text)
@@ -178,24 +179,25 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dice_value = dice_msg.dice.value
     await asyncio.sleep(3)
     
-    score_gained, is_win, status_text = 0, False, ""
-    if dice_value == 6: score_gained, is_win, status_text = 50, True, "🔥 **شــــــــــش ملوووووووک!**"
-    elif dice_value == 5: score_gained, is_win, status_text = 30, True, "😎 عالی!"
-    elif dice_value == 4: score_gained, is_win, status_text = 20, True, "👍 خوب."
-    elif dice_value == 3: score_gained, is_win, status_text = 10, True, "😐 معمولی."
-    elif dice_value == 2: score_gained, is_win, status_text = -5, False, "🤏 بدشانسی."
-    elif dice_value == 1: score_gained, is_win, status_text = -15, False, "💀 تاس کفتار گریبان‌گیرت شد!"
+    score_gained, is_win = 0, False
+    if dice_value == 6: score_gained, is_win = 50, True
+    elif dice_value == 5: score_gained, is_win = 30, True
+    elif dice_value == 4: score_gained, is_win = 20, True
+    elif dice_value == 3: score_gained, is_win = 10, True
+    elif dice_value == 2: score_gained, is_win = -5, False
+    elif dice_value == 1: score_gained, is_win = -15, False
     
     result = update_stats(user_id, score_gained, is_win)
     response = f"👤 **مبارز:** {user_data['username']}{title_tag}\n🎲 **تاس:** 〖 **{dice_value}** 〗\n🏆 **امتیاز:** {score_gained:+} XP"
     if result["rank_changed"]: response += f"\n🎖️ **ارتقا رتبه به: {result['new_rank']}**"
     await update.message.reply_markdown(response)
 
-# --- سیستم دوئل ارتقا یافته کاملاً خودکار ---
+# ==========================================
+# ۳. سیستم دوئل گروهی (ریپلای خودکار)
+# ==========================================
 async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
     if not update.message.reply_to_message:
-        await update.message.reply_text("❌ برای شروع دوئل، باید این دستور را روی پیام حریف خود ریپلای کنید!")
+        await update.message.reply_text("❌ برای شروع دوئل گروهی، باید این دستور را روی پیام حریف ریپلای کنید!")
         return
 
     p1 = update.effective_user
@@ -204,7 +206,7 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p1_msg_id = update.message.message_id
 
     if p1.id == p2.id:
-        await update.message.reply_text("❌ دیوانه شدی؟ نمی‌توانی با خودت دوئل کنی!")
+        await update.message.reply_text("❌ نمی‌توانی با خودت دوئل کنی!")
         return
     if p2.is_bot: return
 
@@ -221,101 +223,266 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_or_create_user(p1.id, p1_name)
     get_or_create_user(p2.id, p2_name)
 
-    # ساخت دکمه شیشه‌ای جهت دریافت تایید از حریف
-    keyboard = [
-        [
-            InlineKeyboardButton("⚔️ قبول می‌کتم (آره)", callback_data=f"duel_yes_{p1.id}_{p2.id}_{rounds}_{p1_msg_id}_{p2_msg_id}"),
-            InlineKeyboardButton("🏳️ ترسو هستم (نه)", callback_data=f"duel_no_{p2.id}")
-        ]
-    ]
+    keyboard = [[
+        InlineKeyboardButton("⚔️ قبول می‌کنم", callback_data=f"gduel_yes_{p1.id}_{p2.id}_{rounds}_{p1_msg_id}_{p2_msg_id}"),
+        InlineKeyboardButton("🏳️ نه", callback_data=f"gduel_no_{p2.id}")
+    ]]
     
     await update.message.reply_markdown(
-        f"⚔️ **درخواست دوئل مرگبار!** ⚔️\n\n"
-        f"👤 **شروع‌کننده:** {p1_name}\n"
-        f"🎯 **حریف دعوت‌شده:** {p2_name}\n"
-        f"🏁 **تعداد راند درخواستی:** {rounds} راند\n\n"
-        f"🔥 {p2_name} عزیز، آیا درخواست دوئل رو قبول می‌کنی؟",
+        f"⚔️ **درخواست دوئل گروهی!**\n\n👤 **شروع‌کننده:** {p1_name}\n🎯 **حریف:** {p2_name}\n🏁 **راند:** {rounds}\n\nآیا قبول می‌کنی؟",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def duel_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==========================================
+# ۴. سیستم تاپ پلیرها + دوئل اختصاصی پیوی (PvP)
+# ==========================================
+async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_cooldown(update): return
+    top_players = get_top_players()
+    if not top_players:
+        await update.message.reply_text("📊 تالار افتخارات خالی است.")
+        return
+    
+    leaderboard_text = "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
+    for index, player in enumerate(top_players):
+        medals = "👑" if index == 0 else "⚡" if index == 1 else "🛡️" if index == 2 else "🎖️"
+        title_tag = f" ({player['title']})" if player['title'] != 'بدون لقب' else ""
+        leaderboard_text += f"{medals} {index + 1}. **{player['username']}**{title_tag}\n  Rank: {player['rank']} | ⭐ {player['score']} XP\n\n"
+    
+    # دکمه شیشه‌ای برای دوئل در پیوی
+    keyboard = [[InlineKeyboardButton("⚔️ دوئل با برترین‌ها (مخصوص پیوی)", callback_data="pv_duel_start")]]
+    await update.message.reply_markdown(leaderboard_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split("_")
     chat_id = query.message.chat_id
-    
-    if data[1] == "no":
-        target_p2_id = int(data[2])
-        if query.from_user.id != target_p2_id:
-            await query.answer("❌ این دکمه مال تو نیست حبیبی!", show_alert=True)
+    user_id = query.from_user.id
+
+    # --- شروع فرآیند دوئل پیوی ---
+    if query.data == "pv_duel_start":
+        if query.message.chat.type != "private":
+            await query.answer("❌ این قابلیت فقط در پیوی (کامپکت خصوصی با ربات) کار می‌کند!", show_alert=True)
             return
         await query.answer()
-        await query.edit_message_text(f"🏳️ **دوئل لغو شد!** {query.from_user.first_name} ترسید و عقب‌نشینی کرد.")
+        PV_DUEL_STATES[user_id] = "WAITING_FOR_TARGET_NUMBER"
+        await query.message.reply_text("🎯 **لطفاً شماره بازیکن مورد نظر خود را از لیست بالا وارد کنید (مثلاً عدد 1 برای نفر اول):**")
         return
 
-    if data[1] == "yes":
+    # --- پذیرش یا رد دوئل در پیوی توسط حریف ---
+    if data[0] == "pvduel":
+        action = data[1]
         p1_id = int(data[2])
         p2_id = int(data[3])
-        rounds = int(data[4])
-        p1_msg_id = int(data[5])
-        p2_msg_id = int(data[6])
 
-        if query.from_user.id != p2_id:
-            await query.answer("❌ فقط حریف دعوت شده می‌تواند نبرد را قبول کند!", show_alert=True)
+        if user_id != p2_id:
+            await query.answer("❌ این درخواست برای شما نیست!", show_alert=True)
             return
-            
-        await query.answer()
-        await query.edit_message_text("⚔️ **نبرد تایید شد! تاس‌ها در حال چرخش و پرتاب رگباری...**")
 
-        # گرفتن نام‌ها از دیتابیس
-        conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-        p1_db = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()
-        p2_db = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()
-        conn.close()
+        if action == "no":
+            await query.answer()
+            await query.edit_message_text("🏳️ شما درخواست دوئل را رد کردید.")
+            try: await context.bot.send_message(chat_id=p1_id, text=f"🏳️ درخواست دوئل شما توسط حریف رد شد.")
+            except: pass
+            return
 
-        p1_name = p1_db['username'] if p1_db else "Player 1"
-        p2_name = p2_db['username'] if p2_db else "Player 2"
+        if action == "yes":
+            await query.answer()
+            await query.edit_message_text("⚔️ **دوئل آغاز شد! در حال پرتاب تاس‌ها...**")
+            try: await context.bot.send_message(chat_id=p1_id, text="⚔️ **حریف درخواست را قبول کرد! نبرد آغاز شد...**")
+            except: pass
 
-        p1_total = 0
-        p2_total = 0
+            # گلچین نام‌ها
+            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+            p1_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()['username']
+            p2_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()['username']
+            conn.close()
 
-        # --- پرتاب تاس رگباری برای بازیکن اول (ریپلای روی پیام خودش) ---
-        await context.bot.send_message(chat_id=chat_id, text=f"🎲 **پرتاب رگباری تاس‌ها برای {p1_name}:**", reply_to_message_id=p1_msg_id)
-        for r in range(rounds):
-            d_msg = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p1_msg_id)
-            p1_total += d_msg.dice.value
-            await asyncio.sleep(0.5) # تاخیر کم برای قاطی نشدن انیمیشن تاس‌ها
+            p1_total, p2_total = 0, 0
 
-        await asyncio.sleep(3.5) # زمان برای پایان انیمیشن آخرین تاس بازیکن اول
-        await context.bot.send_message(chat_id=chat_id, text=f"📊 مجموع امتیاز {p1_name} شد: **{p1_total}**", reply_to_message_id=p1_msg_id)
+            # راندها فیکس روی ۳ راند برای پیوی
+            # --- راند ۱ تا ۳ بازیکن اول ---
+            try: await context.bot.send_message(chat_id=p1_id, text=f"🎲 پرتاب ۳ تاس شما ({p1_name}):")
+            except: pass
+            try: await context.bot.send_message(chat_id=p2_id, text=f"🎲 پرتاب ۳ تاس حریف ({p1_name}) در حال ارسال برای شما:")
+            except: pass
 
-        # --- پرتاب تاس رگباری برای بازیکن دوم (ریپلای روی پیام خودش) ---
-        await context.bot.send_message(chat_id=chat_id, text=f"🎲 **پرتاب رگباری تاس‌ها برای {p2_name}:**", reply_to_message_id=p2_msg_id)
-        for r in range(rounds):
-            d_msg = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p2_msg_id)
-            p2_total += d_msg.dice.value
-            await asyncio.sleep(0.5)
+            for _ in range(3):
+                # پرتاب برای پیوی نفر اول
+                try:
+                    d_msg = await context.bot.send_dice(chat_id=p1_id)
+                    p1_total += d_msg.dice.value
+                    # ارسال همان مقدار تاس برای پیوی نفر دوم جهت تماشا
+                    await context.bot.send_message(chat_id=p2_id, text=f"تاس {p1_name}: 〖 **{d_msg.dice.value}** 〗")
+                except: pass
+                await asyncio.sleep(0.5)
 
-        await asyncio.sleep(3.5)
-        await context.bot.send_message(chat_id=chat_id, text=f"📊 مجموع امتیاز {p2_name} شد: **{p2_total}**", reply_to_message_id=p2_msg_id)
+            await asyncio.sleep(3.5)
 
-        # --- محاسبه نتیجه نهایی کُل نبرد ---
-        if p1_total > p2_total:
-            winner_name, winner_id, loser_id = p1_name, p1_id, p2_id
-            result_txt = f"👑 **پایان نبرد حماسی! {winner_name} با نتیجه {p1_total} بر {p2_total} پیروز بزرگ میدان شد!** 🎉"
-            update_stats(winner_id, 40, True)
-            update_stats(loser_id, -20, False)
-        elif p2_total > p1_total:
-            winner_name, winner_id, loser_id = p2_name, p2_id, p1_id
-            result_txt = f"👑 **پایان نبرد حماسی! {winner_name} با نتیجه {p2_total} بر {p1_total} پیروز بزرگ میدان شد!** 🎉"
-            update_stats(winner_id, 40, True)
-            update_stats(loser_id, -20, False)
-        else:
-            result_txt = f"🤝 **عجب مسابقه‌ای! هر دو گلادیاتور در امتیاز نهایی {p1_total} برابر شدند! بازی مساوی پایان یافت.**"
+            # --- راند ۱ تا ۳ بازیکن دوم ---
+            try: await context.bot.send_message(chat_id=p2_id, text=f"🎲 حالا پرتاب ۳ تاس شما ({p2_name}):")
+            except: pass
+            try: await context.bot.send_message(chat_id=p1_id, text=f"🎲 پرتاب ۳ تاس حریف ({p2_name}) در حال ارسال برای شما:")
+            except: pass
 
-        await context.bot.send_message(chat_id=chat_id, text=f"🏁 **نتیجه نهایی کلوب نبرد ({rounds} رانده):**\n\n{result_txt}\n\n🏆 دیتابیس امتیازات بروزرسانی شد.")
+            for _ in range(3):
+                try:
+                    d_msg = await context.bot.send_dice(chat_id=p2_id)
+                    p2_total += d_msg.dice.value
+                    # ارسال برای پیوی نفر اول جهت تماشا
+                    await context.bot.send_message(chat_id=p1_id, text=f"تاس {p2_name}: 〖 **{d_msg.dice.value}** 〗")
+                except: pass
+                await asyncio.sleep(0.5)
+
+            await asyncio.sleep(3.5)
+
+            # محاسبه و اعلام کل نتیجه در پیوی هردو
+            if p1_total > p2_total:
+                res_p1 = f"👑 **شما پیروز شدید! ({p1_total} vs {p2_total})** 🎉 (+40 XP)"
+                res_p2 = f"💀 **شما باختید! ({p2_total} vs {p1_total})** (-20 XP)"
+                update_stats(p1_id, 40, True)
+                update_stats(p2_id, -20, False)
+            elif p2_total > p1_total:
+                res_p1 = f"💀 **شما باختید! ({p1_total} vs {p2_total})** (-20 XP)"
+                res_p2 = f"👑 **شما پیروز شدید! ({p2_total} vs {p1_total})** 🎉 (+40 XP)"
+                update_stats(p2_id, 40, True)
+                update_stats(p1_id, -20, False)
+            else:
+                res_p1 = res_p2 = f"🤝 **نتیجه مساوی شد! ({p1_total} == {p2_total})**"
+
+            try: await context.bot.send_message(chat_id=p1_id, text=f"🏁 **نتیجه نهایی:**\n\n{res_p1}")
+            except: pass
+            try: await context.bot.send_message(chat_id=p2_id, text=f"🏁 **نتیجه نهایی:**\n\n{res_p2}")
+            except: pass
+            return
+
+    # --- هندل کالبک دوئل‌های گروهی سنتی ---
+    if data[0] == "gduel":
+        action = data[1]
+        if action == "no":
+            if user_id != int(data[2]): return
+            await query.answer()
+            await query.edit_message_text(f"🏳️ دوئل لغو شد. {query.from_user.first_name} عقب نشینی کرد.")
+            return
+        if action == "yes":
+            p1_id, p2_id, rounds = int(data[2]), int(data[3]), int(data[4])
+            p1_msg_id, p2_msg_id = int(data[5]), int(data[6])
+            if user_id != p2_id: return
+            await query.answer()
+            await query.edit_message_text("⚔️ **نبرد گروهی تایید شد! شروع پرتاب‌ها...**")
+
+            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+            p1_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()['username']
+            p2_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()['username']
+            conn.close()
+
+            p1_total, p2_total = 0, 0
+            await context.bot.send_message(chat_id=chat_id, text=f"🎲 پرتاب رگباری برای {p1_name}:", reply_to_message_id=p1_msg_id)
+            for _ in range(rounds):
+                d = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p1_msg_id)
+                p1_total += d.dice.value
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(3.5)
+            await context.bot.send_message(chat_id=chat_id, text=f" مجموع: **{p1_total}**", reply_to_message_id=p1_msg_id)
+
+            await context.bot.send_message(chat_id=chat_id, text=f"🎲 پرتاب رگباری برای {p2_name}:", reply_to_message_id=p2_msg_id)
+            for _ in range(rounds):
+                d = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p2_msg_id)
+                p2_total += d.dice.value
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(3.5)
+            await context.bot.send_message(chat_id=chat_id, text=f" مجموع: **{p2_total}**", reply_to_message_id=p2_msg_id)
+
+            if p1_total > p2_total:
+                txt = f"👑 **{p1_name} پیروز شد!**"
+                update_stats(p1_id, 40, True); update_stats(p2_id, -20, False)
+            elif p2_total > p1_total:
+                txt = f"👑 **{p2_name} پیروز شد!**"
+                update_stats(p2_id, 40, True); update_stats(p1_id, -20, False)
+            else: txt = "🤝 **مساوی!**"
+            await context.bot.send_message(chat_id=chat_id, text=txt)
+
+    # مدیریت دکمه‌های ادمین و خرید لقب
+    if data[0] == "admin": await admin_buttons(update, context)
+    if data[0] == "buy": await shop_callback(update, context)
 
 # ==========================================
-# ۳. سایر بخش‌های ربات (پروفایل، شاپ، تاپ، ادمین)
+# ۵. مانیتورینگ پیام‌ها، چت‌ها و ورودی‌های متنی عددی
+# ==========================================
+async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+    get_or_create_user(user_id, p_name)
+
+    # --- هندل کردن دریافت شماره بازیکن برای دوئل پیوی ---
+    if user_id in PV_DUEL_STATES and PV_DUEL_STATES[user_id] == "WAITING_FOR_TARGET_NUMBER":
+        del PV_DUEL_STATES[user_id]
+        try:
+            selection = int(text)
+            if selection < 1 or selection > 10: raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ عدد نامعتبر است! لطفاً یک شماره بین 1 تا 10 وارد کنید.")
+            return
+
+        top_players = get_top_players()
+        if selection > len(top_players):
+            await update.message.reply_text("❌ این شماره در لیست وجود ندارد!")
+            return
+
+        target_player = top_players[selection - 1]
+        target_id = target_player['telegram_id']
+        target_name = target_player['username']
+
+        if target_id == user_id:
+            await update.message.reply_text("❌ شوخی قشنگی بود ولی نمی‌توانی به خودت درخواست دوئل بدهی!")
+            return
+
+        # ارسال پیامک درخواست به پیوی حریف
+        keyboard = [[
+            InlineKeyboardButton("⚔️ قبول نبرد", callback_data=f"pvduel_yes_{user_id}_{target_id}"),
+            InlineKeyboardButton("🏳️ رد درخواست", callback_data=f"pvduel_no_{user_id}_{target_id}")
+        ]]
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"⚔️ **یک درخواست دوئل پیوی دریافت کردید!**\n\n👤 **فرستنده:** @{p_name}\n🎖️ آیا چالش این مبارز را برای یک بازی ۳ رانده تمام‌عیار می‌پذیرید؟",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            await update.message.reply_markdown(f"🚀 **درخواست دوئل پیوی شما با موفقیت برای @{target_name} ارسال شد.**\nمنتظر تایید او بمانید...")
+        except Exception:
+            await update.message.reply_text("❌ متاسفانه نتوانستم به پیوی حریف پیام بفرستم! (شاید ربات را بلاک کرده یا استارت نزده است)")
+        return
+
+    # کنترل پنل ادمین
+    if user_id in ADMIN_STATES:
+        state = ADMIN_STATES[user_id]
+        if state == "WAITING_FOR_BROADCAST":
+            del ADMIN_STATES[user_id]
+            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+            rows = cursor.execute('SELECT telegram_id FROM users').fetchall(); conn.close()
+            for row in rows:
+                try: await context.bot.send_message(chat_id=row[0], text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
+                except: continue
+            await update.message.reply_text("✅ فرستاده شد.")
+        elif state == "WAITING_FOR_USERNAME_MASTER":
+            del ADMIN_STATES[user_id]; target = text.replace("@", "")
+            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+            cursor.execute("UPDATE users SET score = 6000, rank = '👑 Master' WHERE username = ?", (target,))
+            changes = conn.total_changes; conn.commit(); conn.close()
+            await update.message.reply_text("🚀 ارتقا یافت." if changes > 0 else "❌ پیدا نشد.")
+        elif state == "WAITING_FOR_USERNAME_RESET":
+            del ADMIN_STATES[user_id]; target = text.replace("@", "")
+            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
+            cursor.execute("UPDATE users SET score = 0, rank = '🥉 Bronze I', title = 'بدون لقب' WHERE username = ?", (target,))
+            changes = conn.total_changes; conn.commit(); conn.close()
+            await update.message.reply_text("🧹 صفر شد." if changes > 0 else "❌ پیدا نشد.")
+
+# ==========================================
+# ۶. بخش‌های جانبی سیستم فروشگاه و ادمین
 # ==========================================
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_cooldown(update): return
@@ -334,19 +501,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_markdown(profile_text)
 
-async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_cooldown(update): return
-    top_players = get_top_players()
-    if not top_players:
-        await update.message.reply_text("📊 تالار افتخارات خالی است.")
-        return
-    leaderboard_text = "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
-    for index, player in enumerate(top_players):
-        medals = "👑" if index == 0 else "⚡" if index == 1 else "🛡️" if index == 2 else "🎖️"
-        title_tag = f" ({player['title']})" if player['title'] != 'بدون لقب' else ""
-        leaderboard_text += f"{medals} {index + 1}. **{player['username']}**{title_tag}\n  Rank: {player['rank']} | ⭐ {player['score']} XP\n\n"
-    await update.message.reply_markdown(leaderboard_text)
-
 async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_cooldown(update): return
     user_id = update.effective_user.id
@@ -361,8 +515,6 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; user_id = query.from_user.id; data = query.data
-    if not data.startswith("buy_"): return
-    await query.answer()
     title_key = data.split("_")[1]
     if title_key not in SHOP_TITLES: return
     item = SHOP_TITLES[title_key]
@@ -387,10 +539,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛠 **اتاق فرمان مدیریت:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; user_id = query.from_user.id
-    if not is_user_admin(user_id): return
-    await query.answer(); data = query.data
-
+    query = update.callback_query; user_id = query.from_user.id; data = query.data
     if data == "admin_users":
         conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         users = cursor.execute('SELECT username, score, rank FROM users ORDER BY score DESC LIMIT 15').fetchall(); conn.close()
@@ -409,35 +558,9 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_close":
         await query.edit_message_text("🔒 پنل مدیریت بسته شد.")
 
-async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-
-    if user_id in ADMIN_STATES:
-        state = ADMIN_STATES[user_id]
-        if state == "WAITING_FOR_BROADCAST":
-            del ADMIN_STATES[user_id]
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            rows = cursor.execute('SELECT telegram_id FROM users').fetchall(); conn.close()
-            for row in rows:
-                try: await context.bot.send_message(chat_id=row[0], text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
-                except: continue
-            await update.message.reply_text("✅ فرستاده شد.")
-        elif state == "WAITING_FOR_USERNAME_MASTER":
-            del ADMIN_STATES[user_id]; target = text.replace("@", "")
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            cursor.execute("UPDATE users SET score = 6000, rank = '👑 Master' WHERE username = ?", (target,))
-            changes = conn.total_changes; conn.commit(); conn.close()
-            await update.message.reply_text("🚀 ارتقا یافت." if changes > 0 else "❌ پیدا نشد.")
-        elif state == "WAITING_FOR_USERNAME_RESET":
-            del ADMIN_STATES[user_id]; target = text.replace("@", "")
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            cursor.execute("UPDATE users SET score = 0, rank = '🥉 Bronze I', title = 'بدون لقب' WHERE username = ?", (target,))
-            changes = conn.total_changes; conn.commit(); conn.close()
-            await update.message.reply_text("🧹 صفر شد." if changes > 0 else "❌ پیدا نشد.")
-
+# ==========================================
+# ۷. تابع اصلی اجرا کننده (Main)
+# ==========================================
 def main():
     if BOT_TOKEN == "YOUR_DEFAULT_TOKEN_IF_NOT_SET": return
     application = Application.builder().token(BOT_TOKEN).job_queue(None).build()
@@ -451,12 +574,10 @@ def main():
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("shop", shop_command))
 
-    application.add_handler(CallbackQueryHandler(duel_callback_handler, pattern="^duel_"))
-    application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^admin_"))
-    application.add_handler(CallbackQueryHandler(shop_callback, pattern="^buy_"))
+    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|admin_|buy_)"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_messages_and_inputs))
 
-    print("🚀 ربات با مکانیزم جدید دوئل رگباری آنلاین شد...")
+    print("🚀 ربات با قابلیت نبرد پیوی متقابل (PvP) آنلاین شد...")
     application.run_polling()
 
 if __name__ == "__main__":
