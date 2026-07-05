@@ -538,7 +538,7 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     get_or_create_user(user_id, p_name)
 
     if text == "🎲 پرتاب تاس": 
-        await dice_command(update, context)
+        # این دکمه در mid_filter مدیریت شده تا دوبار صدا زده نشود.
         return
     elif text == "👤 پروفایل من": await profile_command(update, context); return
     elif text == "🏆 تالار افتخارات": await top_command(update, context); return
@@ -723,7 +723,7 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
         f" همین حالا وارد ربات شده و دکمه شیشه‌ای 🕹️ بخش ایونت را لمس کنید تا قوانین رویداد را ببینید!"
     )
     
-    await context.get_admin_net = True
+    context.get_admin_net = True
     try: await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, parse_mode="Markdown")
     except: pass
     
@@ -874,7 +874,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev_id = int(data.split("_")[3])
         if ev_id == 2:
             ADMIN_STATES[user_id] = f"EV_GET_DICE_{ev_id}"
-            await query.edit_message_text("🎯 شانس کدام تاس را می‌خواهی زیاد کنی؟ (عدد ۱ تا ۶ را به صورت متنی بفرست):")
+            await query.edit_message_text("🎯 شانس کدام تاس را می‌خواهی زیاد کنی？ (عدد ۱ تا ۶ را به صورت متنی بفرست):")
         elif ev_id == 15:
             ADMIN_STATES[user_id] = f"EV_GET_DISCOUNT_{ev_id}"
             await query.edit_message_text("💰 درصد تخفیف شاپ را به عدد وارد کن (مثلاً 50):")
@@ -1007,6 +1007,7 @@ def main():
                 await dice_command(update, context)
                 return
                 
+        # هدایت مابقی پیام‌ها به سیستم FSM بدون تداخل دکمه تاس
         await monitor_messages_and_inputs(update, context)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mid_filter))
