@@ -3,7 +3,6 @@ import random
 import sqlite3
 import logging
 import asyncio
-import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
@@ -73,7 +72,8 @@ def init_db():
         ("💀 تاس‌انداز مرگ", 1000),
         ("🔮 ارباب شانس", 1500),
         ("⚔️ گلادیاتور اعظم", 2000),
-        ("👑 امپراتور تاس", 3000)
+        ("🧛 روح تاریک نبرد", 2500),
+        ("🦅 ققنوس جاودان", 4000)
     ]
     for name, cost in default_titles:
         cursor.execute("INSERT OR IGNORE INTO shop (title_name, cost) VALUES (?, ?)", (name, cost))
@@ -131,12 +131,14 @@ def get_or_create_user(telegram_id, username):
     
     user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
     if not user:
+        # قابلیت شماره ۲: اختصاص خودکار لقب سازنده به آیدی aria2773
         initial_title = 'سازنده ربات' if clean_username == "aria2773" else 'بدون لقب'
         cursor.execute('INSERT INTO users (telegram_id, username, created_at, last_seen, title) VALUES (?, ?, ?, ?, ?)', 
                        (telegram_id, clean_username, now_str, now_str, initial_title))
         conn.commit()
         user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
     else:
+        # اگر کاربر از قبل ثبت شده ولی لقب سازنده را ندارد آن را آپدیت کن
         if clean_username == "aria2773" and user['title'] != 'سازنده ربات':
             cursor.execute('UPDATE users SET title = ? WHERE telegram_id = ?', ('سازنده ربات', telegram_id))
             conn.commit()
@@ -177,7 +179,7 @@ def get_top_players():
 # ۲. سیستم کنترل‌ها و منوی اصلی دکمه‌ای ثابت
 # ==========================================
 USER_COOLDOWNS = {}
-USER_LAST_MESSAGE_TIME = {}  # برای سیستم قفل اسپم ۶۰ ثانیه‌ای
+USER_LAST_MESSAGE_TIME = {}  # برای ذخیره زمان آخرین پیام جهت سیستم قفل اسپم ۶۰ ثانیه‌ای
 COOLDOWN_TIME = 1.5
 DUEL_COOLDOWNS = {}
 ADMIN_STATES = {}
@@ -523,58 +525,12 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # محدودیت اسپم معمولی برای یوزرهایی که ادمین نیستند
-    if not is_user_admin(user_id):
-        now = datetime.now().timestamp()
-        if user_id in USER_LAST_MESSAGE_TIME and (now - USER_LAST_MESSAGE_TIME[user_id]) < 60:
-            return
-        USER_LAST_MESSAGE_TIME[user_id] = now
+    # قابلیت شماره ۱: قفل کردن بازیکن جهت جلوگیری از اسپم به مدت ۱ دقیقه (۶۰ ثانیه)
+    now = datetime.now().timestamp()
+    if user_id in USER_LAST_MESSAGE_TIME and (now - USER_LAST_MESSAGE_TIME[user_id]) < 60:
+        return  # قطع اجرای دستور برای بازیکن اسپمر
+    USER_LAST_MESSAGE_TIME[user_id] = now
     
-    # قابلیت اصلی بازیابی رنک‌ها و امتیازات با فرستادن پیام تالار مشاهیر توسط ادمین
-    if is_user_admin(user_id) and ("تالار مشاهیر" in text or "۱۰ گلادیاتور برتر" in text) and "XP" in text:
-        # استخراج یوزرنیم‌ها و امتیازها با استفاده از Regex هوشمند
-        lines = text.split("\n")
-        current_username = None
-        updated_count = 0
-        
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        for line in lines:
-            # پیدا کردن یوزرنیم‌ها (مثلاً کلماتی که بعد از عدد نقطه دار یا مدال می‌آیند)
-            user_match = re.search(r'(?:\d+\.\s*|👑|⚡|🛡️|🎖️)\s*([A-Za-z0-9_]+)', line)
-            if user_match:
-                current_username = user_match.group(1).strip()
-            
-            # پیدا کردن امتیاز ستاره‌دار یا ساده جلوی عبارات (مانند ⭐ 1847 XP)
-            score_match = re.search(r'(?:⭐\s*|\b)(\d+)\s*XP', line)
-            if score_match and current_username:
-                score_val = int(score_match.group(1))
-                rank_val = calculate_rank(score_val)
-                
-                # بررسی اینکه آیا کاربر از قبل وجود دارد یا خیر (اگر نداشت با آیدی رندوم منفی ساخته می‌شود تا رنکش حفظ شود)
-                user_check = cursor.execute("SELECT 1 FROM users WHERE username = ?", (current_username,)).fetchone()
-                if user_check:
-                    cursor.execute("UPDATE users SET score = ?, rank = ? WHERE username = ?", (score_val, rank_val, current_username))
-                else:
-                    fake_id = -random.randint(1000000, 9999999)
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute("INSERT INTO users (telegram_id, username, score, rank, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
-                                   (fake_id, current_username, score_val, rank_val, now_str, now_str))
-                
-                updated_count += 1
-                current_username = None  # ریست برای خط بعدی
-                
-        conn.commit()
-        conn.close()
-        
-        if updated_count > 0:
-            await update.message.reply_text(f"✅ **عملیات بازیابی با موفقیت انجام شد!**\nآمار و رنک {updated_count} کاربر با موفقیت در دیتابیس ثبت و همگام‌سازی شد.")
-            return
-        else:
-            await update.message.reply_text("❌ متنی که فرستادی ساختار درستی نداشت یا یوزرنمی توش پیدا نشد!")
-            return
-
     p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     get_or_create_user(user_id, p_name)
 
@@ -748,6 +704,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_user_admin(update.effective_user.id): return
+    # قابلیت شماره ۳: اضافه شدن گزینه تالار مشاهیر و دکمه بازیابی به منوی ادمین
     keyboard = [
         [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
         [InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"), InlineKeyboardButton("🔄 باز‌یابی پیام رنک", callback_data="admin_restore_msg")],
@@ -779,14 +736,16 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = await top_command(update, context)
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
     elif data == "admin_restore_msg":
+        # ارسال قالب پیام بازیابی و تالار به ادمین برای بازیابی و نمونه
         restore_text = (
             "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
             "👑 1. MSTVIOF\n  Rank: 🥇 Gold II | ⭐ 1847 XP\n\n"
             "⚡ 2. bardia790\n  Rank: 🥇 Gold I | ⭐ 1690 XP\n\n"
             "🛡️ 3. Meemahyar\n  Rank: 🥈 Silver III | ⭐ 905 XP\n\n"
             "🎖️ 4. aria2773\n  Rank: 🥉 Bronze I | ⭐ 0 XP\n\n"
+            "🎖️ 5. GroupAnonymousBot\n  Rank: 🥉 Bronze I | ⭐ 0 XP\n\n"
             "📢 رنک‌های بالای ۷۰۰۰ و ۸۰۰۰ کاپ، سر ماه ریست شده و جوایز ویژه می‌گیرند!\n\n"
-            "💡 *این پیام نمونه است. شما به عنوان ادمین می‌توانید هر پیامی که ساختار مشابه بالا و حاوی امتیازات XP دارد را بفرستید تا دیتابیس خودکار آپدیت شود.*"
+            "💡 *این پیام خام جهت بازیابی ساختار متن تالار افتخارات برای شما ارسال شد.*"
         )
         await query.edit_message_text(restore_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
     elif data == "admin_broadcast":
@@ -825,7 +784,7 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^admin_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_messages_and_inputs))
 
-    print("🚀 نسخه جدید آپدیت بزرگ با قابلیت سینک خودکار پیام فعال شد...")
+    print("🚀 نسخه جدید آپدیت بزرگ با موفقیت ران شد...")
     application.run_polling()
 
 if __name__ == "__main__":
