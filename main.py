@@ -90,10 +90,6 @@ def get_main_menu_keyboard():
 # سیستم هوشمند ضد اسپم و مانیتورینگ متوالی
 # ==========================================
 async def check_spam_and_mute(update: Update, action_type: str) -> bool:
-    """
-    بررسی اسپم ۱۰ تایی دستورات اصلی بازی. 
-    در صورت تخلف، کاربر ۲ دقیقه بیصدا (Mute) می‌شود.
-    """
     user_id = update.effective_user.id
     now = datetime.now().timestamp()
     
@@ -314,7 +310,8 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_players = get_top_players()
     if not top_players:
-        if update.message: await update.message.reply_text("📊 تالار افتخارات خالی است.")
+        if update.message: 
+            await update.message.reply_text("📊 تالار افتخارات خالی است.")
         return "📊 تالار افتخارات خالی است.", []
     
     leaderboard_text = "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
@@ -407,7 +404,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             p1_total, p2_total = 0, 0
             
-            # دور اول پرتاب تاس بازیکن ۱ (ارسال همزمان برای هر دو چت خصوصی جهت مانیتورینگ زنده)
             for _ in range(3):
                 try:
                     d_msg = await context.bot.send_dice(chat_id=p1_id)
@@ -418,7 +414,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.5)
             await asyncio.sleep(3.5)
             
-            # دور دوم پرتاب تاس بازیکن ۲ (ارسال همزمان برای هر دو چت خصوصی جهت مانیتورینگ زنده)
             for _ in range(3):
                 try:
                     d_msg = await context.bot.send_dice(chat_id=p2_id)
@@ -433,7 +428,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             win_xp, lose_xp = 40, 5
             if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
 
-            # ساخت متن پایانی و خلاصه رقابت مجموع تاس‌ها برای نمایش همزمان شفاف
             summary_p1 = f"📊 **نتیجه نهایی دوئل پی‌وی:**\n\nتاس تو: `{p1_total}`\nتاس حریف: `{p2_total}`\n\n"
             summary_p2 = f"📊 **نتیجه نهایی دوئل پی‌وی:**\n\nتاس تو: `{p2_total}`\nتاس حریف: `{p1_total}`\n\n"
 
@@ -487,7 +481,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             p1_total, p2_total = 0, 0
             
-            # --- اجرای نوبت بازیکن اول ---
             await context.bot.send_message(chat_id=chat_id, text=f"🎲 **در حال انداختن تاس برای بازیکن اول: {p1_name}**")
             await asyncio.sleep(1)
             for _ in range(rounds):
@@ -498,7 +491,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await asyncio.sleep(1.5)
 
-            # --- اجرای نوبت بازیکن دوم ---
             await context.bot.send_message(chat_id=chat_id, text=f"🎲 **در حال انداختن تاس برای بازیکن دوم: {p2_name}**")
             await asyncio.sleep(1)
             for _ in range(rounds):
@@ -507,7 +499,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(2.5)
             await context.bot.send_message(chat_id=chat_id, text=f"📊 **مجموع امتیاز تاس‌های {p2_name}: {p2_total}**")
 
-            # --- سیستم محاسبه امتیاز و پاداش ---
             ev = get_current_active_event()
             win_xp, lose_xp = 40, 5
             if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
@@ -569,10 +560,18 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     if text == "🎲 پرتاب تاس": 
         await dice_command(update, context)
         return
-    elif text == "👤 پروفایل من": await profile_command(update, context); return
-    elif text == "🏆 تالار افتخارات": await top_command(update, context); return
-    elif text == "🏪 بازارچه لقب": await shop_command(update, context); return
-    elif text == "ℹ️ راهنمای کلوب": await help_command(update, context); return
+    elif text == "👤 پروفایل من": 
+        await profile_command(update, context)
+        return
+    elif text == "🏆 تالار افتخارات": 
+        await top_command(update, context)
+        return
+    elif text == "🏪 بازارچه لقب": 
+        await shop_command(update, context)
+        return
+    elif text == "ℹ️ راهنمای کلوب": 
+        await help_command(update, context)
+        return
 
     if user_id in PV_DUEL_STATES and PV_DUEL_STATES[user_id] == "WAITING_FOR_TARGET_NUMBER":
         del PV_DUEL_STATES[user_id]
@@ -720,19 +719,14 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             conn.close()
         return
 
-    # 🎯 ۴. موتور هوشمند پردازش هر متن ورودی متفرقه به عنوان ردیم‌کد
-    # علامت‌های اسلش و کلمات کلیدی اولیه را حذف می‌کنیم تا متن خالص ردیم‌کد به دست آید.
     clean_code = text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
-    
     if clean_code:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cdata = cursor.execute('SELECT 1 FROM redeem_codes WHERE code = ?', (clean_code,)).fetchone()
         conn.close()
-        
         if cdata:
-            # تخصیص آرگومان استخراج شده به کانتکست جهت اجرای یکپارچه تابع اصلی
             context.args = [clean_code]
             await redeem_command(update, context)
             return
@@ -859,11 +853,9 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # اصلاح جزئی جهت دریافت کد چه به صورت پیش فرض متن ریپلای شده و چه سورس خام متنی
     if context.args:
         code = context.args[0].strip()
     else:
-        # اگر مستقیم متن فرستاده شده بود و حاوی اسلش/دستور بود فیلتر شود
         code = update.message.text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
         
     if not code:
@@ -1067,7 +1059,7 @@ def main():
                 await handle_admin_logs_input(update, uid, txt)
                 return
                 
-            # جلوگیری از اجرای چندباره به واسطه دکمه‌های متنی اصلی
+            # بررسی مستقیم دکمه‌های منوی اصلی برای جلوگیری از تداخل فیلترها
             if txt in ["🎲 پرتاب تاس", "👤 پروفایل من", "🏆 تالار افتخارات", "🏪 بازارچه لقب", "ℹ️ راهنمای کلوب"]:
                 await monitor_messages_and_inputs(update, context)
                 return
