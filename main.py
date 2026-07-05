@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 DB_FILE = "games.db"
 
 # ==========================================
-# ۱. راه‌اندازی دیتابیس (با جداول جدید شاپ و تاریخچه)
+# ۱. راه‌اندازی دیتابیس (بدون حذف اطلاعات قبلی)
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -40,7 +40,6 @@ def init_db():
             last_seen TEXT
         )
     ''')
-    # جدول ذخیره پرتاب‌های اخیر برای سیستم حمله بحرانی
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS dice_history (
             telegram_id INTEGER,
@@ -48,7 +47,6 @@ def init_db():
             rolled_at TEXT
         )
     ''')
-    # جدول مغازه پویا برای تگ‌های اختصاصی ادمین
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS shop (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +68,6 @@ def init_db():
     cursor.execute('INSERT OR IGNORE INTO admins (telegram_id, added_at) VALUES (?, ?)', 
                    (INITIAL_ADMIN_ID, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     
-    # اضافه کردن تگ‌های پیشفرض در صورت خالی بودن مغازه
     default_titles = [
         ("💀 تاس‌انداز مرگ", 1000),
         ("🔮 ارباب شانس", 1500),
@@ -86,7 +83,6 @@ def init_db():
 
 init_db()
 
-# لیست رنک‌های آپدیت شده تا سقف ۸۰۰۰ امتیاز و رنک‌های مچ‌ریست لجند
 RANKS = [
     {"name": "🥉 Bronze I", "minScore": 0},
     {"name": "🥉 Bronze II", "minScore": 50},
@@ -135,12 +131,19 @@ def get_or_create_user(telegram_id, username):
     
     user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
     if not user:
-        name = clean_username if clean_username else f"User_{telegram_id}"
-        cursor.execute('INSERT INTO users (telegram_id, username, created_at, last_seen) VALUES (?, ?, ?, ?)', 
-                       (telegram_id, name, now_str, now_str))
+        # قابلیت شماره ۲: اختصاص خودکار لقب سازنده به آیدی aria2773
+        initial_title = 'سازنده ربات' if clean_username == "aria2773" else 'بدون لقب'
+        cursor.execute('INSERT INTO users (telegram_id, username, created_at, last_seen, title) VALUES (?, ?, ?, ?, ?)', 
+                       (telegram_id, clean_username, now_str, now_str, initial_title))
         conn.commit()
         user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
     else:
+        # اگر کاربر از قبل ثبت شده ولی لقب سازنده را ندارد آن را آپدیت کن
+        if clean_username == "aria2773" and user['title'] != 'سازنده ربات':
+            cursor.execute('UPDATE users SET title = ? WHERE telegram_id = ?', ('سازنده ربات', telegram_id))
+            conn.commit()
+            user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
+            
         if clean_username: cursor.execute('UPDATE users SET last_seen = ?, username = ? WHERE telegram_id = ?', (now_str, clean_username, telegram_id))
         else: cursor.execute('UPDATE users SET last_seen = ? WHERE telegram_id = ?', (now_str, telegram_id))
         conn.commit()
@@ -176,8 +179,9 @@ def get_top_players():
 # ۲. سیستم کنترل‌ها و منوی اصلی دکمه‌ای ثابت
 # ==========================================
 USER_COOLDOWNS = {}
+USER_LAST_MESSAGE_TIME = {}  # برای ذخیره زمان آخرین پیام جهت سیستم قفل اسپم ۶۰ ثانیه‌ای
 COOLDOWN_TIME = 1.5
-DUEL_COOLDOWNS = {}  # سیستم کول‌داون ۱۵ ثانیه‌ای پس از پایان دوئل
+DUEL_COOLDOWNS = {}
 ADMIN_STATES = {}
 PV_DUEL_STATES = {}
 
@@ -287,11 +291,8 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ برای شروع دوئل گروهی، باید این دستور را روی پیام حریف ریپلای کنید!")
         return
 
-    # استخراج اطلاعات صحیح حتی در صورت فوروارد شدن پیام حریف
     p2 = update.message.reply_to_message.from_user
-    if update.message.reply_to_message.forward_from:
-        p2 = update.message.reply_to_message.forward_from
-
+    
     now = datetime.now().timestamp()
     if p1.id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1.id]:
         left = int(DUEL_COOLDOWNS[p1.id] - now)
@@ -340,7 +341,7 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not top_players:
         if update.message:
             await update.message.reply_text("📊 تالار افتخارات خالی است.")
-        return
+        return "📊 تالار افتخارات خالی است.", []
     
     leaderboard_text = "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
     for index, player in enumerate(top_players):
@@ -524,6 +525,12 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
+    # قابلیت شماره ۱: قفل کردن بازیکن جهت جلوگیری از اسپم به مدت ۱ دقیقه (۶۰ ثانیه)
+    now = datetime.now().timestamp()
+    if user_id in USER_LAST_MESSAGE_TIME and (now - USER_LAST_MESSAGE_TIME[user_id]) < 60:
+        return  # قطع اجرای دستور برای بازیکن اسپمر
+    USER_LAST_MESSAGE_TIME[user_id] = now
+    
     p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     get_or_create_user(user_id, p_name)
 
@@ -697,8 +704,10 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_user_admin(update.effective_user.id): return
+    # قابلیت شماره ۳: اضافه شدن گزینه تالار مشاهیر و دکمه بازیابی به منوی ادمین
     keyboard = [
-        [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
+        [InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"), InlineKeyboardButton("🔄 باز‌یابی پیام رنک", callback_data="admin_restore_msg")],
         [InlineKeyboardButton("🚀 ارتقا امتیاز دلخواه", callback_data="admin_set_score"), InlineKeyboardButton("🧹 صفر کردن امتیاز", callback_data="admin_reset_score")],
         [InlineKeyboardButton("➕ افزودن تگ جدید به شاپ", callback_data="admin_add_shop")],
         [InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")]
@@ -710,7 +719,8 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "admin_home":
         keyboard = [
-            [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
+            [InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"), InlineKeyboardButton("🔄 باز‌یابی پیام رنک", callback_data="admin_restore_msg")],
             [InlineKeyboardButton("🚀 ارتقا امتیاز دلخواه", callback_data="admin_set_score"), InlineKeyboardButton("🧹 صفر کردن امتیاز", callback_data="admin_reset_score")],
             [InlineKeyboardButton("➕ افزودن تگ جدید به شاپ", callback_data="admin_add_shop")],
             [InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")]
@@ -722,6 +732,22 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = "📊 **آمار کاربران برتر:**\n\n"
         for idx, u in enumerate(users): txt += f"{idx+1}. 👤 @{u['username']} | ⭐ {u['score']} XP | {u['rank']}\n"
         await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+    elif data == "admin_top":
+        text, kb = await top_command(update, context)
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+    elif data == "admin_restore_msg":
+        # ارسال قالب پیام بازیابی و تالار به ادمین برای بازیابی و نمونه
+        restore_text = (
+            "🏆 **تالار مشاهیر و ۱۰ گلادیاتور برتر کلوب** 🏆\n\n"
+            "👑 1. MSTVIOF\n  Rank: 🥇 Gold II | ⭐ 1847 XP\n\n"
+            "⚡ 2. bardia790\n  Rank: 🥇 Gold I | ⭐ 1690 XP\n\n"
+            "🛡️ 3. Meemahyar\n  Rank: 🥈 Silver III | ⭐ 905 XP\n\n"
+            "🎖️ 4. aria2773\n  Rank: 🥉 Bronze I | ⭐ 0 XP\n\n"
+            "🎖️ 5. GroupAnonymousBot\n  Rank: 🥉 Bronze I | ⭐ 0 XP\n\n"
+            "📢 رنک‌های بالای ۷۰۰۰ و ۸۰۰۰ کاپ، سر ماه ریست شده و جوایز ویژه می‌گیرند!\n\n"
+            "💡 *این پیام خام جهت بازیابی ساختار متن تالار افتخارات برای شما ارسال شد.*"
+        )
+        await query.edit_message_text(restore_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
     elif data == "admin_broadcast":
         ADMIN_STATES[user_id] = "WAITING_FOR_BROADCAST"
         await query.edit_message_text("📢 متن پیام همگانی خود را ارسال کنید:")
@@ -736,6 +762,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✨ نام تگ اختصاصی جدید را بفرستید (مثلاً: 👑 امپراتور تاس):")
     elif data == "admin_close":
         await query.edit_message_text("🔒 پنل مدیریت بسته شد.")
+    await query.answer()
 
 # ==========================================
 # ۷. تابع اصلی اجرا کننده (Main)
@@ -753,10 +780,11 @@ def main():
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("shop", shop_command))
 
-    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|admin_|buy_)"))
+    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|buy_)"))
+    application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^admin_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_messages_and_inputs))
 
-    print("🚀 نسخه جدید با موفقیت ران شد...")
+    print("🚀 نسخه جدید آپدیت بزرگ با موفقیت ران شد...")
     application.run_polling()
 
 if __name__ == "__main__":
