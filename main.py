@@ -163,7 +163,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "⚔️ 🔴 **لیست فرمان‌های نبرد کلوب تاس (آپدیت بزرگ)** 🔴 ⚔️\n\n"
         "🎲 `🎲 پرتاب تاس` — پرتاب تاس انفرادی (دارای شانس حمله بحرانی متوالی)\n"
-        "⚔️ `/duel [راند]` — **دوئل رگباری در گروه** (حداکثر تا ۶ راند)\n"
+        "⚔️ `/duel [راند] [مقدار شرط]` — **دوئل شرطی در گروه** (حداکثر تا ۶ راند، شرط تا سقف ۵۰ امتیاز)\n"
         "🏪 `🏪 بازارچه لقب` — خرید دسته‌بندی‌شده انواع تگ و لقب‌ها\n"
         "👤 `👤 پروفایل من` — نمایش کارنامه جنگی با احتساب مساوی‌ها\n"
         "🏆 `🏆 تالار افتخارات` — جدول مشاهیر و ۱۰ گلادیاتور برتر کلوب\n"
@@ -259,7 +259,7 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown(response, reply_markup=get_main_menu_keyboard())
 
 # ==========================================
-# سیستم دوئل گروهی
+# سیستم دوئل گروهی (با پشتیبانی از شرط‌بندی)
 # ==========================================
 async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_spam_and_mute(update, "duel"): return
@@ -281,26 +281,46 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if p1.id == p2.id or p2.is_bot: return
 
     rounds = 3
+    wager = 0
     if context.args:
         try:
             rounds = int(context.args[0])
             if rounds < 1: rounds = 3
             if rounds > 6: rounds = 6
         except ValueError: pass
+        
+        if len(context.args) > 1:
+            try:
+                wager = int(context.args[1])
+                if wager < 0: wager = 0
+                if wager > 50:
+                    await update.message.reply_text("❌ **خطای بالانس شاپ!** سقف شرط‌بندی در هر نبرد حداکثر **۵۰ امتیاز** است تا ثبات لیدربرد حفظ شود!")
+                    return
+            except ValueError: pass
 
     p1_name = p1.username if p1.username else p1.first_name
     p2_name = p2.username if p2.username else p2.first_name
 
-    get_or_create_user(p1.id, p1_name)
-    get_or_create_user(p2.id, p2_name)
+    p1_data = get_or_create_user(p1.id, p1_name)
+    p2_data = get_or_create_user(p2.id, p2_name)
+
+    if wager > 0:
+        if p1_data['score'] < wager:
+            await update.message.reply_text(f"❌ امتیاز شما کافی نیست! موجودی شما: {p1_data['score']} XP")
+            return
+        if p2_data['score'] < wager:
+            await update.message.reply_text(f"❌ امتیاز حریف شما برای این شرط‌بندی کافی نیست! موجودی حریف: {p2_data['score']} XP")
+            return
+
+    wager_text = f"💰 **شرط نبرد:** {wager} XP (مجموعاً {wager * 2} امتیاز در وسط زمین!)\n" if wager > 0 else ""
 
     keyboard = [[
-        InlineKeyboardButton("⚔️ قبول می‌کنم", callback_data=f"gduel_yes_{p1.id}_{p2.id}_{rounds}_{p1_msg_id}_{p2_msg_id}"),
+        InlineKeyboardButton("⚔️ قبول می‌کنم", callback_data=f"gduel_yes_{p1.id}_{p2.id}_{rounds}_{p1_msg_id}_{p2_msg_id}_{wager}"),
         InlineKeyboardButton("🏳️ نه", callback_data=f"gduel_no_{p2.id}")
     ]]
     
     await update.message.reply_markdown(
-        f"⚔️ **درخواست دوئل گروهی!**\n\n👤 **شروع‌کننده:** {p1_name}\n🎯 **حریف:** {p2_name}\n🏁 **راند:** {rounds}\n\nآیا چالش را قبول می‌کنی؟",
+        f"⚔️ **درخواست دوئل گروهی!**\n\n👤 **شروع‌کننده:** {p1_name}\n🎯 **حریف:** {p2_name}\n🏁 **راند:** {rounds}\n{wager_text}\nآیا چالش را قبول می‌کنی؟",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -367,7 +387,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔥 **نام رویداد:** {ev['event_name']}\n"
             f"📝 **توضیحات:** {descriptions.get(ev['event_id'], '')}\n\n"
             f"🎁 **پاداش نهایی ایونت:** {reward_desc}\n"
-            f"⏳ **زمان باقی‌مانده:** {rem_h} ساعت و {rem_m} minute"
+            f"⏳ **زمان باقی‌مانده:** {rem_h} ساعت و {rem_m} دقیقه"
         )
         await query.message.reply_text(text, parse_mode="Markdown")
         return
@@ -461,22 +481,33 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "yes":
             p1_id, p2_id, rounds = int(data[2]), int(data[3]), int(data[4])
             p1_msg_id, p2_msg_id = int(data[5]), int(data[6])
+            wager = int(data[7]) if len(data) > 7 else 0
+            
             if user_id != p2_id: 
                 await query.answer("❌ این درخواست دوئل برای شما ارسال نشده است!", show_alert=True)
                 return
             
+            # چک مجدد موجودی کاربران قبل از شروع رسمی مسابقه شرطی
+            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+            p1_chk = cursor.execute('SELECT score, username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()
+            p2_chk = cursor.execute('SELECT score, username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()
+            
+            if wager > 0:
+                if not p1_chk or p1_chk['score'] < wager:
+                    await query.answer("❌ موجودی شروع‌کننده دوئل کافی نیست!", show_alert=True); conn.close(); return
+                if not p2_chk or p2_chk['score'] < wager:
+                    await query.answer("❌ موجودی شما برای تایید این شرط کافی نیست!", show_alert=True); conn.close(); return
+            
             now = datetime.now().timestamp()
             if p1_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1_id]:
-                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); return
+                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
             if p2_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p2_id]:
-                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); return
+                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
                 
             await query.answer(); await query.edit_message_text("⚔️ **نبرد گروهی تایید شد! بازی شروع می‌شود...**")
-            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            p1_row = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()
-            p2_row = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()
-            p1_name = p1_row['username'] if p1_row else f"Player {p1_id}"
-            p2_name = p2_row['username'] if p2_row else f"Player {p2_id}"
+            
+            p1_name = p1_chk['username'] if p1_chk else f"Player {p1_id}"
+            p2_name = p2_chk['username'] if p2_chk else f"Player {p2_id}"
             conn.close()
 
             p1_total, p2_total = 0, 0
@@ -500,18 +531,24 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text=f"📊 **مجموع امتیاز تاس‌های {p2_name}: {p2_total}**")
 
             ev = get_current_active_event()
+            
+            # فرمول پایه برد و باخت در دوئل معمولی + افزودن مقدار شرط به فاکتور نهایی
             win_xp, lose_xp = 40, 5
             if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
 
             result_text = f"🏁 **نتیجه نهایی دوئل گروهی:**\n\n👤 {p1_name}: {p1_total} امتیاز\n👤 {p2_name}: {p2_total} امتیاز\n\n"
 
             if p1_total > p2_total:
-                result_text += f"🏆 **برنده: {p1_name} (+{win_xp} XP)**\n🏅 بازنده: {p2_name} (+{lose_xp} XP)"
-                update_stats(p1_id, win_xp, 'win'); update_stats(p2_id, lose_xp, 'loss')
+                total_win = win_xp + wager
+                total_lose = lose_xp - wager
+                result_text += f"🏆 **برنده: {p1_name} (+{total_win} XP)**\n🏅 بازنده: {p2_name} ({'+' if total_lose >= 0 else ''}{total_lose} XP)"
+                update_stats(p1_id, total_win, 'win'); update_stats(p2_id, total_lose, 'loss')
                 log_score_source(p1_id, "group_duel")
             elif p2_total > p1_total:
-                result_text += f"🏆 **برنده: {p2_name} (+{win_xp} XP)**\n🏅 بازنده: {p1_name} (+{lose_xp} XP)"
-                update_stats(p2_id, win_xp, 'win'); update_stats(p1_id, lose_xp, 'loss')
+                total_win = win_xp + wager
+                total_lose = lose_xp - wager
+                result_text += f"🏆 **برنده: {p2_name} (+{total_win} XP)**\n🏅 بازنده: {p1_name} ({'+' if total_lose >= 0 else ''}{total_lose} XP)"
+                update_stats(p2_id, total_win, 'win'); update_stats(p1_id, total_lose, 'loss')
                 log_score_source(p2_id, "group_duel")
             else:
                 result_text += f"🤝 **نتیجه مساوی شد! به هر دو بازیکن امتیازی اضافه نشد.**"
@@ -731,6 +768,9 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             await redeem_command(update, context)
             return
 
+# ==========================================
+# نهایی‌سازی رویداد و ارسال همگانی با دکمه شیشه‌ای
+# ==========================================
 async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, rew_val):
     admin_id = update.effective_user.id
     if admin_id in ADMIN_STATES: del ADMIN_STATES[admin_id]
@@ -759,16 +799,19 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
         f"🎯 **ایونت:** {EVENT_NAMES_LIST[ev_id]}\n"
         f"🕒 **مدت زمان رویداد:** {hours} ساعت\n"
         f"🎁 **پاداش نهایی:** {rew_val if rew_type != 'none' else 'جوایز سیستمی و دبل'}\n\n"
-        f" همین حالا وارد ربات شده و دکمه شیشه‌ای 🕹️ بخش ایونت را لمس کنید تا قوانین رویداد را ببینید!"
+        f" همین حالا با کلیک روی دکمه شیشه‌ای زیر، جزئیات قوانین و جوایز این رویداد را بررسی کنید! 👇"
     )
     
     context.chat_data["admin_net_active"] = True
     
-    try: await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, parse_mode="Markdown")
+    # اضافه شدن دکمه شیشه‌ای هوشمند مستقیماً زیر پیام همگانی
+    broadcast_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🕹️ جزئیات رویداد زنده", callback_data="user_check_event")]])
+    
+    try: await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, reply_markup=broadcast_markup, parse_mode="Markdown")
     except: pass
     
     for u in users:
-        try: await context.bot.send_message(chat_id=u[0], text=msg_broadcast, parse_mode="Markdown")
+        try: await context.bot.send_message(chat_id=u[0], text=msg_broadcast, reply_markup=broadcast_markup, parse_mode="Markdown")
         except: continue
 
 # ==========================================
@@ -914,7 +957,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev_id = int(data.split("_")[2])
         kb = [[InlineKeyboardButton("بله، فعال شود ✅", callback_data=f"ev_trigger_yes_{ev_id}"),
                InlineKeyboardButton("لغو ❌", callback_data="admin_events_root")]]
-        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید exchange؟", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید؟", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("ev_trigger_yes_"):
