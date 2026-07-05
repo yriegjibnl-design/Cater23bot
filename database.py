@@ -1,219 +1,204 @@
 import sqlite3
-import random
-import re
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 
-DB_FILE = "games.db"
+DB_FILE = "game_database.db"
 
-RANKS = [
-    {"name": "🥉 Bronze I", "minScore": 0},
-    {"name": "🥉 Bronze II", "minScore": 50},
-    {"name": "🥉 Bronze III", "minScore": 150},
-    {"name": "🥈 Silver I", "minScore": 300},
-    {"name": "🥈 Silver II", "minScore": 500},
-    {"name": "🥈 Silver III", "minScore": 800},
-    {"name": "🥇 Gold I", "minScore": 1200},
-    {"name": "🥇 Gold II", "minScore": 1700},
-    {"name": "🥇 Gold III", "minScore": 2300},
-    {"name": "💎 Diamond I", "minScore": 3200},
-    {"name": "💎 Diamond II", "minScore": 4200},
-    {"name": "💎 Diamond III", "minScore": 5400},
-    {"name": "👑 Master", "minScore": 6500},
-    {"name": "🔥 Mythic Legend", "minScore": 7500},
-    {"name": "🌌 Immortal Champion [Monthly Reset]", "minScore": 8500}
-]
+def get_db_connection():
+    """برقراری ارتباط با دیتابیس با قابلیت بازگرداندن ردیف‌ها به صورت دیکشنری"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def init_db(initial_admin_id):
+def init_db(initial_admin_id=7430881772):
+    """ساخت تمام جدول‌های مورد نیاز ربات به صورت یکپارچه"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+
+    # ۱. جدول کاربران کلوب
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        telegram_id INTEGER PRIMARY KEY,
+        username TEXT NOT EXISTS,
+        score INTEGER DEFAULT 0,
+        rank TEXT DEFAULT '🥉 Bronze I',
+        title TEXT DEFAULT 'بدون لقب',
+        title_expire TEXT,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        draws INTEGER DEFAULT 0,
+        total_games INTEGER DEFAULT 0,
+        created_at TEXT,
+        last_seen TEXT
+    )
+    """)
+
+    # ۲. جدول ادمین‌های سیستم
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS admins (
+        telegram_id INTEGER PRIMARY KEY
+    )
+    """)
+
+    # ۳. جدول تاریخچه پرتاب تاس‌ها (برای محاسبات حمله بحرانی / Critical Hit)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS dice_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER,
+        dice_value INTEGER,
+        rolled_at TEXT
+    )
+    """)
+
+    # ۴. جدول لاگ منابع امتیازگیری (برای مانیتورینگ ادمین)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS score_logs (
+        telegram_id INTEGER,
+        game_type TEXT,
+        count INTEGER DEFAULT 0,
+        PRIMARY KEY (telegram_id, game_type)
+    )
+    """)
+
+    # ۵. جدول بازارچه لقب‌ها (Shop)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS shop (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title_name TEXT UNIQUE,
+        cost INTEGER,
+        category TEXT
+    )
+    """)
+
+    # ۶. جدول کدهای هدیه (Redeem Codes)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS redeem_codes (
+        code TEXT PRIMARY KEY,
+        title_name TEXT,
+        max_uses INTEGER,
+        current_uses INTEGER DEFAULT 0,
+        duration_hours INTEGER
+    )
+    """)
+
+    # ۷. جدول تاریخچه استفاده از کدهای هدیه (جلوگیری از استفاده مجدد)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS redeem_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER,
+        code TEXT,
+        used_at TEXT
+    )
+    """)
+
+    # ۸. جدول سیستم مدیریت رویدادها و ایونت‌های ۸ گانه
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS active_event (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id INTEGER,
+        event_name TEXT,
+        end_time TEXT,
+        extra_data TEXT,
+        reward_type TEXT,
+        reward_value TEXT
+    )
+    """)
+
+    # افزودن ادمین اولیه پروژه‌ در صورت عدم وجود
+    cursor.execute("INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)", (initial_admin_id,))
     
-    # جدول کاربران با ستون جدید draws (مساوی) و title_expire (زمان انقضای لقب)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            telegram_id INTEGER PRIMARY KEY,
-            username TEXT,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            draws INTEGER DEFAULT 0,
-            total_games INTEGER DEFAULT 0,
-            score INTEGER DEFAULT 0,
-            rank TEXT DEFAULT '🥉 Bronze I',
-            title TEXT DEFAULT 'بدون لقب',
-            title_expire TEXT,
-            created_at TEXT,
-            last_seen TEXT
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS dice_history (
-            telegram_id INTEGER,
-            dice_value INTEGER,
-            rolled_at TEXT
-        )
-    ''')
-    
-    # جدول فروشگاه آپدیت شده با ستون category (نوع لقب)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS shop (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title_name TEXT UNIQUE,
-            cost INTEGER,
-            category TEXT DEFAULT 'normal'
-        )
-    ''')
-    
-    # جدول ادمین‌ها
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            telegram_id INTEGER PRIMARY KEY, added_at TEXT
-        )
-    ''')
-    
-    # جدول ردیم کدها با قابلیت محدودیت تعداد استفاده و مدت زمان اعتبار لقب پس از فعال‌سازی
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS redeem_codes (
-            code TEXT PRIMARY KEY,
-            title_name TEXT,
-            max_uses INTEGER,
-            current_uses INTEGER DEFAULT 0,
-            duration_hours INTEGER
-        )
-    ''')
-    
-    # جدول ثبت استفاده کاربران از ردیم کدها (هر کس یکبار)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS redeem_history (
-            telegram_id INTEGER,
-            code TEXT,
-            used_at TEXT,
-            PRIMARY KEY (telegram_id, code)
-        )
-    ''')
-    
-    # جدول لاگ امتیازات برای ادمین (انفرادی، دوعل و غیره)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS score_logs (
-            telegram_id INTEGER,
-            game_type TEXT,
-            count INTEGER DEFAULT 0,
-            PRIMARY KEY (telegram_id, game_type)
-        )
-    ''')
-    
-    # اعمال الترهای لازم در صورت وجود نداشتن ستون‌ها در دیتابیس قدیمی
-    try: cursor.execute("ALTER TABLE users ADD COLUMN draws INTEGER DEFAULT 0")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE users ADD COLUMN title_expire TEXT")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE shop ADD COLUMN category TEXT DEFAULT 'normal'")
-    except sqlite3.OperationalError: pass
-    
-    cursor.execute('INSERT OR IGNORE INTO admins (telegram_id, added_at) VALUES (?, ?)', 
-                   (initial_admin_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    
-    # افزودن لقب‌های پیش‌فرض در بخش‌بندی‌های مختلف
-    default_titles = [
-        ("💀 تاس‌انداز مرگ", 1000, "normal"),
-        ("🔮 ارباب شانس", 1500, "normal"),
-        ("⚔️ گلادیاتور اعظم", 2000, "epic"),
-        ("👑 امپراتور تاس", 3000, "legendary")
-    ]
-    for name, cost, cat in default_titles:
-        cursor.execute("INSERT OR IGNORE INTO shop (title_name, cost, category) VALUES (?, ?, ?)", (name, cost, cat))
-        
+    # پر کردن شاپ اولیه به صورت پیش‌فرض (در صورت خالی بودن جدول)
+    shop_check = cursor.execute("SELECT COUNT(*) FROM shop").fetchone()[0]
+    if shop_check == 0:
+        default_items = [
+            ('🥈 نوچه کلوب', 200, 'normal'),
+            ('🥈 تاس باز', 400, 'normal'),
+            ('🔮 شکارچی سایه', 1500, 'epic'),
+            ('🔮 مبارز ابدی', 2500, 'epic'),
+            ('👑 شاهزاده نبرد', 6000, 'legendary'),
+            ('👑 گلادیاتور اعظم', 9000, 'legendary')
+        ]
+        cursor.executemany("INSERT INTO shop (title_name, cost, category) VALUES (?, ?, ?)", default_items)
+
     conn.commit()
     conn.close()
 
-def calculate_rank(score):
-    current_rank = RANKS[0]["name"]
-    for rank in RANKS:
-        if score >= rank["minScore"]: current_rank = rank["name"]
-        else: break
-    return current_rank
+# ==========================================
+# توابع کاربردی و منطقی مدیریت کاربران
+# ==========================================
 
 def is_user_admin(telegram_id):
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    res = cursor.execute('SELECT 1 FROM admins WHERE telegram_id = ?', (telegram_id,)).fetchone()
-    conn.close(); return res is not None
+    """بررسی سطح دسترسی ادمین"""
+    conn = get_db_connection()
+    admin = conn.execute("SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return admin is not None
 
 def get_or_create_user(telegram_id, username):
-    conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+    """احراز هویت یا ثبت نام کاربر جدید در دیتابیس نبرد"""
+    conn = get_db_connection()
+    user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    clean_username = username.replace("@", "") if username else None
     
-    # بررسی انقضای لقب قبل از لود کردن پروفایل
-    cursor.execute('SELECT title, title_expire FROM users WHERE telegram_id = ?', (telegram_id,))
-    u_chk = cursor.fetchone()
-    if u_chk and u_chk['title_expire']:
-        try:
-            expire_dt = datetime.strptime(u_chk['title_expire'], "%Y-%m-%d %H:%M:%S")
-            if datetime.now() > expire_dt:
-                cursor.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL WHERE telegram_id = ?", (telegram_id,))
-                conn.commit()
-        except: pass
-
-    user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
     if not user:
-        initial_title = 'سازنده ربات' if clean_username == "aria2773" else 'بدون لقب'
-        cursor.execute('INSERT INTO users (telegram_id, username, created_at, last_seen, title) VALUES (?, ?, ?, ?, ?)', 
-                       (telegram_id, clean_username, now_str, now_str, initial_title))
+        # ساخت اکانت جدید با رنک برنز اولیه
+        conn.execute("""
+            INSERT INTO users (telegram_id, username, created_at, last_seen)
+            VALUES (?, ?, ?, ?)
+        """, (telegram_id, username, now_str, now_str))
         conn.commit()
-        user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
     else:
-        if clean_username == "aria2773" and user['title'] != 'سازنده ربات':
-            cursor.execute('UPDATE users SET title = ? WHERE telegram_id = ?', ('سازنده ربات', telegram_id))
-            conn.commit()
-            user = cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,)).fetchone()
-            
-        if clean_username: cursor.execute('UPDATE users SET last_seen = ?, username = ? WHERE telegram_id = ?', (now_str, clean_username, telegram_id))
-        else: cursor.execute('UPDATE users SET last_seen = ? WHERE telegram_id = ?', (now_str, telegram_id))
+        # آپدیت آخرین زمان بازدید و یوزرنیم (در صورت تغییر در تلگرام)
+        conn.execute("UPDATE users SET username = ?, last_seen = ? WHERE telegram_id = ?", (username, now_str, telegram_id))
         conn.commit()
-    conn.close(); return user
+        
+    conn.close()
+    return user
 
-def update_stats(telegram_id, score_gained, mode):
-    # mode می‌تواند: 'win', 'loss', 'draw' باشد
-    user = get_or_create_user(telegram_id, None)
-    new_score = max(0, user['score'] + score_gained)
+def calculate_rank(score):
+    """محاسبه دقیق رتبه‌بندی کاربران بر اساس سقف امتیازات کلوب"""
+    if score < 0: return "💀 کفتار کلوب"
+    elif score < 200: return "自由 Gladiator"
+    elif score < 600: return "🥉 Bronze I"
+    elif score < 1200: return "🥉 Bronze II"
+    elif score < 2000: return "🥈 Silver I"
+    elif score < 3500: return "🥈 Silver II"
+    elif score < 5500: return "🥇 Gold I"
+    elif score < 8000: return "🥇 Gold II"
+    elif score < 12000: return "🔮 Diamond"
+    else: return "👑 Immortal Legend"
+
+def update_stats(telegram_id, score_change, mode='win'):
+    """به‌روزرسانی همزمان امتیازات، برد و باخت‌ها و لول‌آپ خودکار رنک"""
+    conn = get_db_connection()
+    user = conn.execute("SELECT score, wins, losses, draws, total_games FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    
+    new_score = max(0, user['score'] + score_change) # جلوگیری از منفی شدن امتیاز کل زیر صفر
     new_rank = calculate_rank(new_score)
+    rank_changed = (new_rank != user['score']) # پرچم تایید تغییر رنک
     
-    win_inc = 1 if mode == 'win' else 0
-    loss_inc = 1 if mode == 'loss' else 0
-    draw_inc = 1 if mode == 'draw' else 0
+    w, l, d = user['wins'], user['losses'], user['draws']
+    if mode == 'win': w += 1
+    elif mode == 'loss': l += 1
+    elif mode == 'draw': d += 1
     
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE users SET score = ?, rank = ?, wins = wins + ?, losses = losses + ?, draws = draws + ?, total_games = total_games + 1, last_seen = ?
+    total = w + l + d
+    
+    conn.execute("""
+        UPDATE users 
+        SET score = ?, rank = ?, wins = ?, losses = ?, draws = ?, total_games = ?
         WHERE telegram_id = ?
-    ''', (new_score, new_rank, win_inc, loss_inc, draw_inc, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), telegram_id))
-    conn.commit(); conn.close()
-    return {"old_rank": user['rank'], "new_rank": new_rank, "rank_changed": new_rank != user['rank']}
+    """, (new_score, new_rank, w, l, d, total, telegram_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"new_score": new_score, "new_rank": new_rank, "rank_changed": rank_changed}
 
-def log_score_source(telegram_id, game_type):
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO score_logs (telegram_id, game_type, count) VALUES (?, ?, 1)
-        ON CONFLICT(telegram_id, game_type) DO UPDATE SET count = count + 1
-    ''', (telegram_id, game_type))
-    conn.commit(); conn.close()
-
-def get_score_logs(telegram_id):
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    logs = cursor.execute('SELECT game_type, count FROM score_logs WHERE telegram_id = ?', (telegram_id,)).fetchall()
-    conn.close(); return logs
-
-def get_titles_by_category(category):
-    conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-    titles = cursor.execute('SELECT * FROM shop WHERE category = ?', (category,)).fetchall()
-    conn.close(); return titles
-
-def get_top_players():
-    conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-    top_users = cursor.execute('''
-        SELECT telegram_id, username, rank, title, score 
-        FROM users 
-        WHERE username IS NOT NULL 
-        ORDER BY score DESC, total_games DESC 
-        LIMIT 10
-    ''').fetchall()
-    conn.close(); return top_users
+def get_top_players(limit=10):
+    """دریافت لیست مشاهیر و ۱۰ گلادیاتور برتر کلوب"""
+    conn = get_db_connection()
+    players = conn.execute("SELECT * FROM users ORDER BY score DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return players
