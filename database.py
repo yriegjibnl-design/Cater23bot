@@ -15,11 +15,11 @@ def init_db(initial_admin_id=7430881772):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # ۱. جدول کاربران کلوب
+    # ۱. جدول کاربران کلوب (رفع ارور سینتکس EXISTS)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         telegram_id INTEGER PRIMARY KEY,
-        username TEXT NOT EXISTS,
+        username TEXT,
         score INTEGER DEFAULT 0,
         rank TEXT DEFAULT '🥉 Bronze I',
         title TEXT DEFAULT 'بدون لقب',
@@ -172,11 +172,17 @@ def calculate_rank(score):
 def update_stats(telegram_id, score_change, mode='win'):
     """به‌روزرسانی همزمان امتیازات، برد و باخت‌ها و لول‌آپ خودکار رنک"""
     conn = get_db_connection()
-    user = conn.execute("SELECT score, wins, losses, draws, total_games FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    user = conn.execute("SELECT score, rank, wins, losses, draws, total_games FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
     
+    if not user:
+        conn.close()
+        return None
+
     new_score = max(0, user['score'] + score_change) # جلوگیری از منفی شدن امتیاز کل زیر صفر
     new_rank = calculate_rank(new_score)
-    rank_changed = (new_rank != user['score']) # پرچم تایید تغییر رنک
+    
+    # اصلاح باگ منطقی: مقایسه رنک جدید با رنک قبلی (نه با امتیاز قبلی)
+    rank_changed = (new_rank != user['rank']) 
     
     w, l, d = user['wins'], user['losses'], user['draws']
     if mode == 'win': w += 1
