@@ -69,10 +69,11 @@ EVENT_NAMES_LIST = {
     22: "چالش روزانه گلادیاتورها 🎯"
 }
 
-# هش و حافظه موقت وضعیت‌ها
-USER_COOLDOWNS = {}
-USER_LAST_MESSAGE_TIME = {}
-COOLDOWN_TIME = 1.5
+# هش و حافظه موقت وضعیت‌ها و سیستم ضد اسپم جدید
+USER_DICE_COUNT = {}     # تعداد تاس‌های متوالی کاربر
+USER_DUEL_COUNT = {}     # تعداد دوئل‌های متوالی کاربر
+USER_MUTE_TIMEOUT = {}   # زمان پایان میوت کاربر (۲ دقیقه)
+
 DUEL_COOLDOWNS = {}
 ADMIN_STATES = {}
 PV_DUEL_STATES = {}
@@ -85,14 +86,46 @@ def get_main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-async def check_cooldown(update: Update) -> bool:
+# ==========================================
+# سیستم هوشمند ضد اسپم و مانیتورینگ متوالی
+# ==========================================
+async def check_spam_and_mute(update: Update, action_type: str) -> bool:
+    """
+    بررسی اسپم ۱۰ تایی دستورات اصلی بازی. 
+    در صورت تخلف، کاربر ۲ دقیقه بیصدا (Mute) می‌شود.
+    """
     user_id = update.effective_user.id
     now = datetime.now().timestamp()
-    if user_id in USER_COOLDOWNS and now < USER_COOLDOWNS[user_id]:
-        if update.message:
-            await update.message.reply_text('⚡ **آرام‌تر! چند لحظه صبر کن.**')
-        return False
-    USER_COOLDOWNS[user_id] = now + COOLDOWN_TIME
+    
+    # ۱. بررسی اینکه آیا کاربر در حال حاضر در حالت سکوت ۲ دقیقه‌ای هست یا نه
+    if user_id in USER_MUTE_TIMEOUT:
+        if now < USER_MUTE_TIMEOUT[user_id]:
+            return False
+        else:
+            # زمان میوت تمام شده، پاکسازی حافظه
+            del USER_MUTE_TIMEOUT[user_id]
+            USER_DICE_COUNT[user_id] = 0
+            USER_DUEL_COUNT[user_id] = 0
+
+    # ۲. شمارش و بررسی اکشن‌ها
+    if action_type == "dice":
+        USER_DICE_COUNT[user_id] = USER_DICE_COUNT.get(user_id, 0) + 1
+        USER_DUEL_COUNT[user_id] = 0 # ریست کردن شمارنده دوئل چون تسلسل قطع شد
+        
+        if USER_DICE_COUNT[user_id] >= 10:
+            USER_MUTE_TIMEOUT[user_id] = now + 120 # ۲ دقیقه میوت (۱۲۰ ثانیه)
+            await update.message.reply_markdown(f"💀 **وضعیت سکوت!**\nکاربر @{update.effective_user.username} به دلیل پرتاب متوالی ۱۰ تاس، به مدت **۲ دقیقه** از بازی محروم شد! اتمسفر کلوب را متشنج نکن.")
+            return False
+
+    elif action_type == "duel":
+        USER_DUEL_COUNT[user_id] = USER_DUEL_COUNT.get(user_id, 0) + 1
+        USER_DICE_COUNT[user_id] = 0 # ریست کردن شمارنده تاس چون تسلسل قطع شد
+        
+        if USER_DUEL_COUNT[user_id] >= 10:
+            USER_MUTE_TIMEOUT[user_id] = now + 120 # ۲ دقیقه میوت
+            await update.message.reply_markdown(f"💀 **وضعیت سکوت دوئل!**\nکاربر @{update.effective_user.username} به دلیل ارسال ۱۰ درخواست دوئل رگباری، به مدت **۲ دقیقه** در لیست سیاه قرار گرفت!")
+            return False
+
     return True
 
 # چک کردن انقضا یا فعال بودن ایونت
@@ -116,7 +149,6 @@ def get_current_active_event():
     return ev
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_cooldown(update): return
     user = update.effective_user
     get_or_create_user(user.id, user.username if user.username else user.first_name)
     
@@ -128,7 +160,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"دستت رو بذار روی دکمه، تاس رو پرتاب کن و ثابت کن شاهِ این میدونی یا فقط یه تماشاچی! 🔥"
     )
     
-    # اضافه کردن دکمه شیشه‌ای ایونت به منوی استارت
     ev = get_current_active_event()
     text_btn = "🕹️ بخش ایونت (فعال 🔥)" if ev else "🕹️ بخش ایونت"
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(text_btn, callback_data="user_check_event")]])
@@ -137,7 +168,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✨ جهت بررسی رویدادها و چالش‌های زنده کلوب دکمه زیر را لمس کنید:", reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_cooldown(update): return
     help_text = (
         "⚔️ 🔴 **لیست فرمان‌های نبرد کلوب تاس (آپدیت بزرگ)** 🔴 ⚔️\n\n"
         "🎲 `🎲 پرتاب تاس` — پرتاب تاس انفرادی (دارای شانس حمله بحرانی متوالی)\n"
@@ -182,7 +212,7 @@ def log_score_source(telegram_id, game_type):
     conn.commit(); conn.close()
 
 async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_cooldown(update): return
+    if not await check_spam_and_mute(update, "dice"): return
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
     
@@ -194,25 +224,24 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     base_score = DICE_SCORES[dice_value]
     
-    # لایه‌ی تاثیر ایونت‌ها روی تاس انفرادی
     ev = get_current_active_event()
     ev_bonus_text = ""
     
     if ev:
         ev_id = ev['event_id']
-        if ev_id == 1: # امتیاز دوبرابر
+        if ev_id == 1: 
             base_score *= 2
             ev_bonus_text = "\n⚡ **[ایونت امتیاز ۲ برابر فعال است]**"
-        elif ev_id == 2: # شانس تاس خاص
+        elif ev_id == 2: 
             ex_data = json.loads(ev['extra_data'])
             if dice_value == int(ex_data.get('dice', 0)):
                 base_score += 30
                 ev_bonus_text = f"\n🎯 **[ایونت شانس تاس {dice_value}! +30 امتیاز بونوس]**"
-        elif ev_id == 3: # تاس معکوس
+        elif ev_id == 3: 
             if dice_value == 1: base_score = 40
             elif dice_value == 6: base_score = -10
             ev_bonus_text = "\n🃏 **[ایونت تاس معکوس فعال است! قوانین جابه‌جا شده‌اند]**"
-        elif ev_id == 7: # تاس مخفی
+        elif ev_id == 7: 
             ev_bonus_text = "\n🎰 **[ایونت تاس مخفی! آمار نهایی پایان ایونت محاسبه می‌شود]**"
 
     is_critical = register_and_check_critical(user_id, dice_value)
@@ -241,6 +270,7 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # سیستم دوئل گروهی
 # ==========================================
 async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_spam_and_mute(update, "duel"): return
     p1 = update.effective_user
     if not update.message.reply_to_message:
         await update.message.reply_text("❌ برای شروع دوئل گروهی، باید این دستور را روی پیام حریف ریپلای کنید!")
@@ -310,7 +340,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     user_id = query.from_user.id
 
-    # منوی چک کردن ایونت توسط کاربر
     if query.data == "user_check_event":
         ev = get_current_active_event()
         if not ev:
@@ -396,11 +425,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.5)
             await asyncio.sleep(3.5)
 
-            # بررسی تاثیر ایونت امتیاز دوبرابر
             ev = get_current_active_event()
             win_xp, lose_xp = 40, 5
-            if ev and ev['event_id'] == 1:
-                win_xp, lose_xp = 80, 10
+            if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
 
             if p1_total > p2_total:
                 res_p1 = f"🏆 پیروز شدید! (+{win_xp} XP)"
@@ -484,11 +511,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    if not is_user_admin(user_id):
-        now = datetime.now().timestamp()
-        if user_id in USER_LAST_MESSAGE_TIME and (now - USER_LAST_MESSAGE_TIME[user_id]) < 60: return
-        USER_LAST_MESSAGE_TIME[user_id] = now
-    
     # همگام‌سازی از تالار مشاهیر
     if is_user_admin(user_id) and ("تالار مشاهیر" in text or "۱۰ گلادیاتور برتر" in text) and "XP" in text:
         lines = text.split("\n"); current_username = None; updated_count = 0
@@ -515,7 +537,9 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     get_or_create_user(user_id, p_name)
 
-    if text == "🎲 پرتاب تاس": await dice_command(update, context); return
+    if text == "🎲 پرتاب تاس": 
+        await dice_command(update, context)
+        return
     elif text == "👤 پروفایل من": await profile_command(update, context); return
     elif text == "🏆 تالار افتخارات": await top_command(update, context); return
     elif text == "🏪 بازارچه لقب": await shop_command(update, context); return
@@ -579,14 +603,12 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             except ValueError:
                 await update.message.reply_text("❌ مقدار ساعت نامعتبر است!"); return
             
-            # ذخیره زمان موقت و پارامترها و باز کردن فاز جایزه برای ۷، ۸ و ۲۲
             if ev_id in [7, 8, 22]:
                 ADMIN_STATES[user_id] = f"EV_ASK_REWARD_{ev_id}_{hours}_{param}"
                 kb = [[InlineKeyboardButton("آره 🎁", callback_data=f"evrew_yes_{ev_id}_{hours}_{param}"),
                        InlineKeyboardButton("نه ❌", callback_data=f"evrew_no_{ev_id}_{hours}_{param}")]]
-                await update.message.reply_text("🎁 آیا می‌خواهید برای پایان زمان این ایونت پاداش اتوماتیک بگذارید؟", reply_markup=InlineKeyboardMarkup(kb))
+                await update.message.reply_text("🎁 آیا می‌خواهید برای پایان زمان این ایونت پاداش اتوماتیک بگذارید bindings؟", reply_markup=InlineKeyboardMarkup(kb))
             else:
-                # ایونت‌های بدون جایزه سیستمی، مستقیم ران و برادکست می‌شوند
                 await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             return
 
@@ -595,7 +617,7 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             ev_id = int(parts[3])
             hours = float(parts[4])
             param = parts[5]
-            rew_type = parts[6] # score یا tag
+            rew_type = parts[6]
             
             await finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, text)
             return
@@ -672,7 +694,7 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
 # هندلر فعال‌سازی نهایی ایونت و برادکست همگانی
 async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, rew_val):
     admin_id = update.effective_user.id
-    del ADMIN_STATES[admin_id]
+    if admin_id in ADMIN_STATES: del ADMIN_STATES[admin_id]
     
     end_time = datetime.now() + timedelta(hours=hours)
     end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -683,13 +705,12 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM active_event") # ریست ایونت قبلی
+    cursor.execute("DELETE FROM active_event")
     cursor.execute("""
         INSERT INTO active_event (event_id, event_name, end_time, extra_data, reward_type, reward_value)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (ev_id, EVENT_NAMES_LIST[ev_id], end_time_str, json.dumps(ex_data), rew_type, rew_val))
     
-    # گرفتن تمام یوزرهای دیتابیس برای برادکست پیوی
     users = cursor.execute("SELECT telegram_id FROM users").fetchall()
     conn.commit()
     conn.close()
@@ -702,15 +723,13 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
         f" همین حالا وارد ربات شده و دکمه شیشه‌ای 🕹️ بخش ایونت را لمس کنید تا قوانین رویداد را ببینید!"
     )
     
-    # برادکست به گروه اصلی
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, parse_mode="Markdown")
+    await context.get_admin_net = True
+    try: await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, parse_mode="Markdown")
+    except: pass
     
-    # برادکست پیوی تک به تک
     for u in users:
         try: await context.bot.send_message(chat_id=u[0], text=msg_broadcast, parse_mode="Markdown")
         except: continue
-        
-    await update.message.reply_text("✅ ایونت با موفقیت در سراسر دیتابیس فعال و برادکست شد!")
 
 # ==========================================
 # سیستم فروشگاه و لقب‌ها
@@ -752,7 +771,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not shop_items:
             await query.edit_message_text(f"🔒 محصولی در این بخش موجود نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="shopmain_back")]])); return
             
-        # اعمال ایونت تخفیف شاپ (جمعه سیاه)
         ev = get_current_active_event()
         discount_pct = 0
         if ev and ev['event_id'] == 15:
@@ -837,7 +855,6 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"💰 قیمت لقب « {title_name} » را وارد کنید:")
         return
 
-    # منوی ریشه ایونت‌ها
     if data == "admin_events_root":
         kb = []
         for ev_id, ev_name in EVENT_NAMES_LIST.items():
@@ -867,15 +884,15 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("evrew_"):
-        # فاز تعیین پاداش انتهای ایونت
         parts = data.split("_")
-        choice = parts[1] # yes یا no
+        choice = parts[1]
         ev_id = int(parts[2])
         hours = float(parts[3])
         param = parts[4]
         
         if choice == "no":
-            await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
+            await finalize_and_broadcast_event(query, context, ev_id, hours, param, "none", "")
+            await query.edit_message_text("✅ ایونت با موفقیت فعال و فرستاده شد.")
         else:
             kb = [[InlineKeyboardButton("امتیاز (XP) 💰", callback_data=f"evtype_score_{ev_id}_{hours}_{param}"),
                    InlineKeyboardButton("تگ اختصاصی (Tag) 🏷️", callback_data=f"evtype_tag_{ev_id}_{hours}_{param}")]]
@@ -917,7 +934,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = await top_command(update, context)
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
     elif data == "admin_restore_msg":
-        restore_text = "🏆 نمونه پیام تالار مشاهیر حهت ریست و آپدیت خودکار دیتابیس بوسیله کپی..."
+        restore_text = "🏆 نمونه پیام تالار مشاهیر جهت ریست و آپدیت خودکار دیتابیس بوسیله کپی..."
         await query.edit_message_text(restore_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
     elif data == "admin_broadcast":
         ADMIN_STATES[user_id] = "WAITING_FOR_BROADCAST"
@@ -978,15 +995,23 @@ def main():
         if update.message and update.message.text:
             uid = update.effective_user.id
             txt = update.message.text.strip()
+            
+            # فیلترهای هدایت متنی ادمین
             if uid in ADMIN_STATES and ADMIN_STATES[uid] == "WAITING_FOR_LOGS_ID":
                 del ADMIN_STATES[uid]
                 await handle_admin_logs_input(update, uid, txt)
                 return
+                
+            # رهگیری کلمات کلیدی کیبورد و اعمال سیستم ضد اسپم روی دکمه تاس
+            if txt == "🎲 پرتاب تاس":
+                await dice_command(update, context)
+                return
+                
         await monitor_messages_and_inputs(update, context)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mid_filter))
 
-    print("🚀 ربات فوق پیشرفته به همراه سیستم ایونت‌های هشت‌گانه با موفقیت ران شد...")
+    print("🚀 ربات فوق پیشرفته کلوب تاس همراه با قفل ضداسپم متوالی با موفقیت ران شد...")
     application.run_polling()
 
 if __name__ == "__main__":
