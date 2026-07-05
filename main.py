@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # راه‌اندازی اولیه فایل دیتابیس جداگانه
 init_db(INITIAL_ADMIN_ID)
 
-# 🎰 امتیازدهی جدید تاس‌ها دقیقاً طبق فرمول درخواستی شما
+# 🎰 امتیازدهی جدید تاس‌ها
 DICE_SCORES = {
     1: -5,
     2: 5,
@@ -83,13 +83,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user.id, user.username if user.username else user.first_name)
     
-    # 📝 متن شروع خفن‌تر و بازنویسی شده
-    await update.message.reply_markdown(
-        f"⚔️ **به قلمرو حماسی و نسخه ارتقایافته نبرد تاس خوش آمدی، {user.first_name}!** ⚔️\n\n"
-        f"🎲 اینجا جاییه که شانس، شجاعت و استراتژی سرنوشتت رو رقم می‌زنن. "
-        f"تاس‌ها کاملاً عادلانه شده، تالار افتخارات فعال شده و شاپِ بخش‌بندی شده لقب‌ها منتظرته! دستت رو روی دکمه بذار و نبرد رو شروع کن! 🔥",
-        reply_markup=get_main_menu_keyboard()
+    # ⚔️ متن خوش‌آمدگویی حماسی، گنگ و به شدت گنگستر جایگزین متن قبلی شد!
+    welcome_text = (
+        f"⚔️ **به قلمرو خونین و بی‌رحم «نبرد تاس» خوش آمدی، {user.first_name}!** ⚔️\n\n"
+        f"اینجا جایی نیست که با خواهش و تمنا امتیاز جمع کنی! اینجا کلوپ گلادیاتورهاست؛ "
+        f"جایی که شانس فقط به شجاع‌ها رو می‌کنه و یک پرتاب اشتباه، می‌تونه تو رو به قعر جدول بفرسته! 💀\n\n"
+        f"⚡ **تاس‌های عادلانه مستقر شدن، بازارچه تگ‌های جنگی آمادست و حریف‌ها دندون تیز کردن!**\n"
+        f"دستت رو بذار روی دکمه، تاس رو پرتاب کن و ثابت کن شاهِ این میدونی یا فقط یه تماشاچی! 🔥"
     )
+    
+    await update.message.reply_markdown(welcome_text, reply_markup=get_main_menu_keyboard())
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_cooldown(update): return
@@ -157,7 +160,6 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         score_gained = base_score
         motivation = random.choice(DICE_MOTIVATIONS[dice_value])
     
-    # تعیین وضعیت برد یا باخت برای دیتابیس بر اساس کسر یا اضافه شدن امتیاز تاس
     mode_str = 'win' if score_gained > 0 else 'loss'
     result = update_stats(user_id, score_gained, mode_str)
     log_score_source(user_id, "solo_roll")
@@ -325,7 +327,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await asyncio.sleep(3.5)
 
-            # 🎭 متن برنده شدن خفن‌تر دوئل‌ها همراه سیستم ثبت مساوی جدید
             if p1_total > p2_total:
                 res_p1 = f"🏆 **حماسه آفریدی جنگجو!**\n\nشما با اقتدار و مجموع تاس `{p1_total}` در مقابل مجموع تاس `{p2_total}` حریف رو خاک کردید و فاتح دوعل شدید! 🏅\n(+40 XP)"
                 res_p2 = f"💀 **شکست سنگین در میدان مبارزه!**\n\nمجموع تاس شما `{p2_total}` حریف رو پیروز میدان کرد (`{p1_total}`). امتیاز از دست دادید.\n(+5 XP)"
@@ -399,7 +400,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3.5)
             await context.bot.send_message(chat_id=chat_id, text=f" مجموع: **{p2_total}**", reply_to_message_id=p2_msg_id)
 
-            # 🎭 متن برنده شدن خفن‌تر دوعل‌های گروهی به همراه آمار مساوی دیتابیس
             if p1_total > p2_total:
                 txt = f"🏆 **حماسه آفریدی جنگجو!**\n\n👤 **{p1_name}** با مجموع تاس `{p1_total}` حریف خود یعنی **{p2_name}** را در هم کوبید و پیروز نبرد شد! 🎉 (+40 XP)"
                 update_stats(p1_id, 40, 'win')
@@ -577,7 +577,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             changes = conn.total_changes; conn.commit(); conn.close()
             await update.message.reply_text("🧹 حساب کاربر صفر شد." if changes > 0 else "❌ پیدا نشد.")
             
-        # 🟢 بخش ساخت ردیم کد ادمین به صورت مرحله به مرحله عددی
         elif state == "WAITING_FOR_REDEEM_CODE":
             ADMIN_STATES[user_id] = f"REDEEM_TITLE_{text}"
             await update.message.reply_text("✨ نام تگ یا لقبی که مایلید با این ردیم‌کد اهدا شود را ارسال کنید:")
@@ -654,7 +653,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
     title_display = f"🏅 **لقب ویژه:** {user['title']}" if user['title'] != 'بدون لقب' else "🏅 **لقب ویژه:** ندارد"
     
-    # 🤝 اضافه شدن بخش آمار مساوی‌ها (Draws) به کارت پروفایل شما
     profile_text = (
         f"🎮 ━━━ **کارت عضویت کلوب نبرد** ━━━ 🎮\n\n"
         f"👤 **نام جنگجو:** {user['username']}\n{title_display}\n"
@@ -667,7 +665,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_markdown(profile_text, reply_markup=get_main_menu_keyboard())
     return profile_text
 
-# 🏪 شاپ جدید با دکمه‌های شیشه‌ای بخش‌بندی شده به ازای هر دسته لقب
 async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
@@ -680,7 +677,7 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if update.message:
         await update.message.reply_text(
-            f"🏪 **به بازارچه ارتقایافته لقب‌ها خوش آمدی!**\n💰 موجودی شما: {user['score']} XP\n\nدسته‌بندی مورد نظر خود را انتخاب کنید:", 
+            f"🏪 **به بازارچه لقب‌ها خوش آمدی!**\n💰 موجودی شما: {user['score']} XP\n\nدسته‌بندی مورد نظر خود را انتخاب کنید:", 
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -711,7 +708,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data="shopmain_cat_epic")],
             [InlineKeyboardButton("👑 لقب لجندری", callback_data="shopmain_cat_legendary")]
         ]
-        await query.edit_message_text("🏪 **بازارچه ارتقایافته لقب‌ها**\n\nدسته‌بندی مورد نظر خود را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🏪 **بازارچه لقب‌ها**\n\nدسته‌بندی مورد نظر خود را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
         
     elif data.startswith("shopbuy_id_"):
         item_id = int(data.split("_")[2])
@@ -731,7 +728,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit(); conn.close()
         await query.edit_message_text(f"🎉 **لقب حماسی اختصاصی « {item['title_name']} » با موفقیت خریداری و بر روی پروفایل شما فعال شد!**")
 
-# command برای سیستم ردیم کد یوزرها
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
@@ -836,11 +832,9 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔒 پنل مدیریت بسته شد.")
         
     if user_id in ADMIN_STATES and ADMIN_STATES[user_id] == "WAITING_FOR_LOGS_ID":
-        # دریافت پیام متنی ادمین برای آیدی کاربر در متد مانیتورینگ هندل می‌شود.
         pass
     await query.answer()
 
-# مانیتورینگ مجزای ادمین برای بخش لاگ‌ها
 async def handle_admin_logs_input(update: Update, user_id, text):
     try:
         target_id = int(text)
@@ -880,7 +874,6 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^(admin_|setcat_)"))
     application.add_handler(CallbackQueryHandler(shop_callback, pattern="^(shopmain_|shopbuy_)"))
     
-    # اضافه کردن بررسی لاگ ادمین در بدنه قبل از مانیتورینگ متنی معمولی
     async def mid_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message and update.message.text:
             uid = update.effective_user.id
@@ -893,7 +886,7 @@ def main():
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mid_filter))
 
-    print("🚀 نسخه جدید با شاپ شیشه‌ای دسته‌بندی‌شده و ردیم‌کدهای پیشرفته ادمین فعال شد...")
+    print("🚀 نسخه جدید ربات با متن استارت ارتقایافته فعال شد...")
     application.run_polling()
 
 if __name__ == "__main__":
