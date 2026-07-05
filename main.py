@@ -718,6 +718,24 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
                 await update.message.reply_text(f"✅ لقب « {new_title} » به شاپ اضافه شد.")
             except sqlite3.IntegrityError: await update.message.reply_text("❌ این تگ قبلاً ثبت شده است.")
             conn.close()
+        return
+
+    # 🎯 ۴. موتور هوشمند پردازش هر متن ورودی متفرقه به عنوان ردیم‌کد
+    # علامت‌های اسلش و کلمات کلیدی اولیه را حذف می‌کنیم تا متن خالص ردیم‌کد به دست آید.
+    clean_code = text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
+    
+    if clean_code:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cdata = cursor.execute('SELECT 1 FROM redeem_codes WHERE code = ?', (clean_code,)).fetchone()
+        conn.close()
+        
+        if cdata:
+            # تخصیص آرگومان استخراج شده به کانتکست جهت اجرای یکپارچه تابع اصلی
+            context.args = [clean_code]
+            await redeem_command(update, context)
+            return
 
 async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, rew_val):
     admin_id = update.effective_user.id
@@ -840,10 +858,18 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not context.args:
-        await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88`")
+    
+    # اصلاح جزئی جهت دریافت کد چه به صورت پیش فرض متن ریپلای شده و چه سورس خام متنی
+    if context.args:
+        code = context.args[0].strip()
+    else:
+        # اگر مستقیم متن فرستاده شده بود و حاوی اسلش/دستور بود فیلتر شود
+        code = update.message.text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
+        
+    if not code:
+        await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
         return
-    code = context.args[0].strip()
+        
     conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
     cdata = cursor.execute('SELECT * FROM redeem_codes WHERE code = ?', (code,)).fetchone()
     if not cdata or cdata['current_uses'] >= cdata['max_uses']:
@@ -896,7 +922,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev_id = int(data.split("_")[2])
         kb = [[InlineKeyboardButton("بله، فعال شود ✅", callback_data=f"ev_trigger_yes_{ev_id}"),
                InlineKeyboardButton("لغو ❌", callback_data="admin_events_root")]]
-        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید؟", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید exchange؟", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("ev_trigger_yes_"):
