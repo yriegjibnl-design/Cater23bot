@@ -163,7 +163,6 @@ def update_stats(telegram_id, score_gained, is_win):
 
 def get_top_players():
     conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-    # بهینه‌سازی شده برای جلوگیری از بروز باگ در حجم دیتای بالا
     top_users = cursor.execute('''
         SELECT telegram_id, username, rank, title, score 
         FROM users 
@@ -232,7 +231,6 @@ def register_and_check_critical(telegram_id, current_dice):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("INSERT INTO dice_history (telegram_id, dice_value, rolled_at) VALUES (?, ?, ?)", (telegram_id, current_dice, now_str))
     
-    # واکشی ۳ پرتاب آخر کاربر
     history = cursor.execute('''
         SELECT dice_value FROM dice_history 
         WHERE telegram_id = ? 
@@ -243,7 +241,6 @@ def register_and_check_critical(telegram_id, current_dice):
     if len(history) == 3:
         if history[0][0] == history[1][0] == history[2][0]:
             is_critical = True
-            # ریست کردن تاریخچه کاربر بعد از وقوع حمله بحرانی جهت جلوگیری از تکرار مداوم چرخه‌ای
             cursor.execute("DELETE FROM dice_history WHERE telegram_id = ?", (telegram_id,))
             
     conn.commit(); conn.close()
@@ -264,7 +261,6 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_critical = register_and_check_critical(user_id, dice_value)
     
     if is_critical:
-        # در حالت حمله بحرانی، مجموع سه تاس یکسان ضربدر ۳ می‌شود
         score_gained = (dice_value * 3) * 3
         motivation = f"⚡💥 **حمله بحرانی تاس رخ داد!!!** 💥⚡\nسه پرتاب متوالی تو عدد 〖 **{dice_value}** 〗 بود! قدرت پرتاب تو ۳ برابر شد!"
     else:
@@ -291,9 +287,11 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ برای شروع دوئل گروهی، باید این دستور را روی پیام حریف ریپلای کنید!")
         return
 
+    # استخراج اطلاعات صحیح حتی در صورت فوروارد شدن پیام حریف
     p2 = update.message.reply_to_message.from_user
-    
-    # بررسی محدودیت استراحت ۱۵ ثانیه‌ای سرور برای کاربران
+    if update.message.reply_to_message.forward_from:
+        p2 = update.message.reply_to_message.forward_from
+
     now = datetime.now().timestamp()
     if p1.id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1.id]:
         left = int(DUEL_COOLDOWNS[p1.id] - now)
@@ -308,7 +306,6 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if p2.is_bot: return
 
-    # اعمال محدودیت سقف ۶ راند برای مهار مصرف سرور
     rounds = 3
     if context.args:
         try:
@@ -450,7 +447,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 res_p1 = res_p2 = f"🤝 **نتیجه مساوی شد! ({p1_total} == {p2_total})**"
 
-            # اعمال کول‌داون ۱۵ ثانیه‌ای پس از اتمام بازی
             finish_time = datetime.now().timestamp() + 15.0
             DUEL_COOLDOWNS[p1_id] = finish_time
             DUEL_COOLDOWNS[p2_id] = finish_time
@@ -585,7 +581,6 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             await update.message.reply_text("❌ امکان ارسال پیام به پیوی حریف مقدور نبود!")
         return
 
-    # هندل کردن ورودی‌های ادمین پویای جدید
     if user_id in ADMIN_STATES:
         state = ADMIN_STATES[user_id]
         
@@ -761,7 +756,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|admin_|buy_)"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_messages_and_inputs))
 
-    print("🚀 نسخه جدید آپدیت بزرگ با موفقیت ران شد...")
+    print("🚀 نسخه جدید با موفقیت ران شد...")
     application.run_polling()
 
 if __name__ == "__main__":
