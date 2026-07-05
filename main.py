@@ -370,7 +370,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔥 **نام رویداد:** {ev['event_name']}\n"
             f"📝 **توضیحات:** {descriptions.get(ev['event_id'], '')}\n\n"
             f"🎁 **پاداش نهایی ایونت:** {reward_desc}\n"
-            f"⏳ **زمان باقی‌مانده:** {rem_h} ساعت و {rem_m} دقیقه"
+            f"⏳ **زمان باقی‌مانده:** {rem_h} ساعت و {rem_m} minute"
         )
         await query.message.reply_text(text, parse_mode="Markdown")
         return
@@ -407,14 +407,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             p1_total, p2_total = 0, 0
             
-            # --- اصلاح باگ ارسال تاس متقابل در پی‌وی ---
             # دور اول پرتاب تاس بازیکن ۱ (ارسال همزمان برای هر دو چت خصوصی جهت مانیتورینگ زنده)
             for _ in range(3):
                 try:
-                    # پرتاب اصلی در چت بازیکن ۱
                     d_msg = await context.bot.send_dice(chat_id=p1_id)
                     p1_total += d_msg.dice.value
-                    # فوروارد یا ارسال متن تایید پرتاب برای بازیکن ۲
                     try: await context.bot.send_message(chat_id=p2_id, text=f"🎲 حریفت ({p1_name}) تاس انداخت و عدد 〖 {d_msg.dice.value} 〗 اومد!")
                     except: pass
                 except: pass
@@ -424,10 +421,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # دور دوم پرتاب تاس بازیکن ۲ (ارسال همزمان برای هر دو چت خصوصی جهت مانیتورینگ زنده)
             for _ in range(3):
                 try:
-                    # پرتاب اصلی در چت بازیکن ۲
                     d_msg = await context.bot.send_dice(chat_id=p2_id)
                     p2_total += d_msg.dice.value
-                    # ارسال متن تایید پرتاب برای بازیکن ۱
                     try: await context.bot.send_message(chat_id=p1_id, text=f"🎲 حریفت ({p2_name}) تاس انداخت و عدد 〖 {d_msg.dice.value} 〗 اومد!")
                     except: pass
                 except: pass
@@ -467,52 +462,73 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = data[1]
         if action == "no":
             if user_id != int(data[2]): return
-            await query.answer(); await query.edit_message_text(f"🏳️ دوئل لغو شد.")
+            await query.answer(); await query.edit_message_text(f"🏳️ دوئل توسط حریف لغو شد.")
             return
         if action == "yes":
             p1_id, p2_id, rounds = int(data[2]), int(data[3]), int(data[4])
             p1_msg_id, p2_msg_id = int(data[5]), int(data[6])
-            if user_id != p2_id: return
+            if user_id != p2_id: 
+                await query.answer("❌ این درخواست دوئل برای شما ارسال نشده است!", show_alert=True)
+                return
             
             now = datetime.now().timestamp()
             if p1_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1_id]:
-                await query.answer("❌ محدودیت کول‌داون فعال است!", show_alert=True); return
+                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); return
+            if p2_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p2_id]:
+                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); return
                 
-            await query.answer(); await query.edit_message_text("⚔️ **نبرد گروهی تایید شد! شروع پرتاب‌ها...**")
+            await query.answer(); await query.edit_message_text("⚔️ **نبرد گروهی تایید شد! بازی شروع می‌شود...**")
             conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            p1_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()['username']
-            p2_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()['username']
+            p1_row = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()
+            p2_row = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()
+            p1_name = p1_row['username'] if p1_row else f"Player {p1_id}"
+            p2_name = p2_row['username'] if p2_row else f"Player {p2_id}"
             conn.close()
 
             p1_total, p2_total = 0, 0
+            
+            # --- اجرای نوبت بازیکن اول ---
+            await context.bot.send_message(chat_id=chat_id, text=f"🎲 **در حال انداختن تاس برای بازیکن اول: {p1_name}**")
+            await asyncio.sleep(1)
             for _ in range(rounds):
                 d = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p1_msg_id)
                 p1_total += d.dice.value
-                await asyncio.sleep(0.5)
-            await asyncio.sleep(3.5)
+                await asyncio.sleep(2.5)
+            await context.bot.send_message(chat_id=chat_id, text=f"📊 **مجموع امتیاز تاس‌های {p1_name}: {p1_total}**")
+            
+            await asyncio.sleep(1.5)
+
+            # --- اجرای نوبت بازیکن دوم ---
+            await context.bot.send_message(chat_id=chat_id, text=f"🎲 **در حال انداختن تاس برای بازیکن دوم: {p2_name}**")
+            await asyncio.sleep(1)
             for _ in range(rounds):
                 d = await context.bot.send_dice(chat_id=chat_id, reply_to_message_id=p2_msg_id)
                 p2_total += d.dice.value
-                await asyncio.sleep(0.5)
-            await asyncio.sleep(3.5)
+                await asyncio.sleep(2.5)
+            await context.bot.send_message(chat_id=chat_id, text=f"📊 **مجموع امتیاز تاس‌های {p2_name}: {p2_total}**")
 
+            # --- سیستم محاسبه امتیاز و پاداش ---
             ev = get_current_active_event()
             win_xp, lose_xp = 40, 5
             if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
 
+            result_text = f"🏁 **نتیجه نهایی دوئل گروهی:**\n\n👤 {p1_name}: {p1_total} امتیاز\n👤 {p2_name}: {p2_total} امتیاز\n\n"
+
             if p1_total > p2_total:
-                txt = f"🏆 **{p1_name}** با مجموع `{p1_total}` پیروز شد! (+{win_xp} XP)"
+                result_text += f"🏆 **برنده: {p1_name} (+{win_xp} XP)**\n🏅 بازنده: {p2_name} (+{lose_xp} XP)"
                 update_stats(p1_id, win_xp, 'win'); update_stats(p2_id, lose_xp, 'loss')
+                log_score_source(p1_id, "group_duel")
             elif p2_total > p1_total:
-                txt = f"🏆 **{p2_name}** با مجموع `{p2_total}` پیروز شد! (+{win_xp} XP)"
+                result_text += f"🏆 **برنده: {p2_name} (+{win_xp} XP)**\n🏅 بازنده: {p1_name} (+{lose_xp} XP)"
                 update_stats(p2_id, win_xp, 'win'); update_stats(p1_id, lose_xp, 'loss')
+                log_score_source(p2_id, "group_duel")
             else:
-                txt = f"🤝 مساوی شد!"
+                result_text += f"🤝 **نتیجه مساوی شد! به هر دو بازیکن امتیازی اضافه نشد.**"
                 update_stats(p1_id, 0, 'draw'); update_stats(p2_id, 0, 'draw')
             
             finish_time = datetime.now().timestamp() + 15.0
             DUEL_COOLDOWNS[p1_id] = finish_time; DUEL_COOLDOWNS[p2_id] = finish_time
-            await context.bot.send_message(chat_id=chat_id, text=txt)
+            await context.bot.send_message(chat_id=chat_id, text=result_text)
 
     if data[0] == "admin": await admin_buttons(update, context)
     if data[0] == "shop": await shop_callback(update, context)
@@ -619,7 +635,7 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
                 ADMIN_STATES[user_id] = f"EV_ASK_REWARD_{ev_id}_{hours}_{param}"
                 kb = [[InlineKeyboardButton("آره 🎁", callback_data=f"evrew_yes_{ev_id}_{hours}_{param}"),
                        InlineKeyboardButton("نه ❌", callback_data=f"evrew_no_{ev_id}_{hours}_{param}")]]
-                await update.message.reply_text("🎁 آیا می‌خواهید برای پایان زمان این ایونت پاداش اتوماتیک بگذارید bindings؟", reply_markup=InlineKeyboardMarkup(kb))
+                await update.message.reply_text("🎁 آیا می‌خواهید برای پایان زمان این ایونت پاداش اتوماتیک بگذارید؟", reply_markup=InlineKeyboardMarkup(kb))
             else:
                 await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             return
@@ -689,7 +705,7 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data=f"setcat_normal_{text}")],
                         [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data=f"setcat_epic_{text}")],
                         [InlineKeyboardButton("👑 لقب لجندری", callback_data=f"setcat_legendary_{text}")]]
-            await update.message.reply_text("📂 دسته‌ب بندی لقب جدید را مشخص کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text("📂 دسته‌بندی لقب جدید را مشخص کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
         elif state.startswith("SHOP_PRICE_"):
             parts = state.split("_"); new_title = parts[2]; cat_type = parts[3]
             del ADMIN_STATES[user_id]
@@ -854,7 +870,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ افزودن تگ جدید به شاپ", callback_data="admin_add_shop"), InlineKeyboardButton("🔑 ساخت ردیم کد", callback_data="admin_make_redeem")],
         [InlineKeyboardButton("📊 رهگیری آمار امتیازگیری", callback_data="admin_check_logs")],
         [InlineKeyboardButton("🕹️ سیستم فوق پیشرفته مدیریت ایونت‌ها", callback_data="admin_events_root")],
-        [InlineKeyboardButton("🔄 ریست و پایان تمام ایونت‌ها", callback_data="admin_reset_all_events")], # دکمه جدید درخواستی
+        [InlineKeyboardButton("🔄 ریست و پایان تمام ایونت‌ها", callback_data="admin_reset_all_events")], 
         [InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")]
     ]
     await update.message.reply_text("🛠 **اتاق فرمان مدیریت پیشرفته ربات:**", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -880,7 +896,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev_id = int(data.split("_")[2])
         kb = [[InlineKeyboardButton("بله، فعال شود ✅", callback_data=f"ev_trigger_yes_{ev_id}"),
                InlineKeyboardButton("لغو ❌", callback_data="admin_events_root")]]
-        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید?\\", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید؟", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("ev_trigger_yes_"):
@@ -926,13 +942,10 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✨ نام تگ انحصاری پایان رویداد را بنویسید (مثلاً: 👑 سلطان دوئل):")
         return
 
-    # --- هندل دکمه درخواستی ریست ایونت‌ها و تگ‌ها ---
     if data == "admin_reset_all_events":
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        # ۱. پاکسازی جدول ایونت فعال
         cursor.execute("DELETE FROM active_event")
-        # ۲. ریست کردن لقب تمام کاربران به «بدون لقب» و حذف انقضاها بدون آسیب به امتیاز/رنک
         cursor.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL")
         conn.commit()
         conn.close()
@@ -1028,8 +1041,9 @@ def main():
                 await handle_admin_logs_input(update, uid, txt)
                 return
                 
-            if txt == "🎲 پرتاب تاس":
-                await dice_command(update, context)
+            # جلوگیری از اجرای چندباره به واسطه دکمه‌های متنی اصلی
+            if txt in ["🎲 پرتاب تاس", "👤 پروفایل من", "🏆 تالار افتخارات", "🏪 بازارچه لقب", "ℹ️ راهنمای کلوب"]:
+                await monitor_messages_and_inputs(update, context)
                 return
                 
         await monitor_messages_and_inputs(update, context)
