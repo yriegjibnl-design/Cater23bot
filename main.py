@@ -5,48 +5,299 @@ import logging
 import asyncio
 import re
 import json
+import string
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
-# وارد کردن توابع اختصاصی مدیریت دیتابیس از فایل جانبی
-from database import init_db, is_user_admin, get_or_create_user, update_stats, get_top_players, calculate_rank
+# Try to import psycopg2 for PostgreSQL support; if unavailable, rely entirely on SQLite fallback
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
 
 # ==========================================
-# تنظیمات اصلی ربات از طریق محیط سرور
+# MAIN CORE BOT CONFIGURATION
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFqv00G_eAFkeP0x-UhrENKByEb5U5_MnM")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFGeDmC1lnY_LoFaah7zTAX7NjriIb2-Tc")
 INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
-DB_FILE = "database.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # If set, automatically connects to PostgreSQL
+
+DB_FILE = "club_tas.db"
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# راه‌اندازی اولیه فایل دیتابیس جداگانه و جدول ایونت‌ها
-init_db(INITIAL_ADMIN_ID)
+# ==========================================
+# UNIFIED DUAL DATABASE MANAGEMENT LAYER
+# ==========================================
+def get_db_connection():
+    """
+    Creates and returns a connection object. Supports PostgreSQL if DATABASE_URL
+    is specified and available, otherwise seamlessly falls back to SQLite.
+    """
+    if DATABASE_URL and POSTGRES_AVAILABLE:
+        # Standardize connection string format for compatibility
+        url = DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(url, sslmode="allow")
+        return conn, True
+    else:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn, False
 
-def init_event_table():
-    conn = sqlite3.connect(DB_FILE)
+def execute_write(query, params=()):
+    """Executes a write query (INSERT, UPDATE, DELETE) on the active database engine."""
+    conn, is_pg = get_db_connection()
+    if not is_pg:
+        query = query.replace("%s", "?")
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        return affected
+    except Exception as e:
+        logger.error(f"Database write error: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
+
+def execute_read_one(query, params=()):
+    """Executes a query and returns a single row as a dictionary format."""
+    conn, is_pg = get_db_connection()
+    if not is_pg:
+        query = query.replace("%s", "?")
+    try:
+        if is_pg:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        cursor.close()
+        if row and not is_pg:
+            return dict(row)
+        return row
+    except Exception as e:
+        logger.error(f"Database read one error: {e}")
+        return None
+    finally:
+        conn.close()
+
+def execute_read_all(query, params=()):
+    """Executes a query and returns all matching rows as a list of dictionaries."""
+    conn, is_pg = get_db_connection()
+    if not is_pg:
+        query = query.replace("%s", "?")
+    try:
+        if is_pg:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        cursor.close()
+        if not is_pg:
+            return [dict(r) for r in rows]
+        return rows
+    except Exception as e:
+        logger.error(f"Database read all error: {e}")
+        return []
+    finally:
+        conn.close()
+
+# Initialize tables structure across both database environments
+def init_db_schema():
+    conn, is_pg = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS active_event (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        event_id INTEGER,
-        event_name TEXT,
-        end_time TEXT,
-        extra_data TEXT,
-        reward_type TEXT,
-        reward_value TEXT
-    )
-    """)
+    
+    if is_pg:
+        # PostgreSQL Schema Design
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id BIGINT PRIMARY KEY,
+            username TEXT,
+            score INTEGER DEFAULT 0,
+            rank TEXT DEFAULT '🥉 Bronze I',
+            title TEXT DEFAULT 'بدون لقب',
+            title_expire TEXT,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            draws INTEGER DEFAULT 0,
+            total_games INTEGER DEFAULT 0,
+            created_at TEXT,
+            last_seen TEXT,
+            unlocked_titles TEXT DEFAULT '[]',
+            unlocked_perks TEXT DEFAULT '[]'
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_event (
+            id SERIAL PRIMARY KEY,
+            event_id INTEGER,
+            event_name TEXT,
+            end_time TEXT,
+            extra_data TEXT,
+            reward_type TEXT,
+            reward_value TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS dice_history (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT,
+            dice_value INTEGER,
+            rolled_at TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS score_logs (
+            telegram_id BIGINT,
+            game_type TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (telegram_id, game_type)
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shop (
+            id SERIAL PRIMARY KEY,
+            title_name TEXT UNIQUE,
+            cost INTEGER,
+            category TEXT,
+            item_type TEXT DEFAULT 'title'
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS redeem_codes (
+            code TEXT PRIMARY KEY,
+            title_name TEXT,
+            max_uses INTEGER,
+            current_uses INTEGER DEFAULT 0,
+            duration_hours INTEGER
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS redeem_history (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT,
+            code TEXT,
+            used_at TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS offline_duels (
+            duel_id TEXT PRIMARY KEY,
+            creator_id BIGINT,
+            wager INTEGER,
+            rounds INTEGER,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
+        )""")
+    else:
+        # SQLite Schema Design
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id INTEGER PRIMARY KEY,
+            username TEXT,
+            score INTEGER DEFAULT 0,
+            rank TEXT DEFAULT '🥉 Bronze I',
+            title TEXT DEFAULT 'بدون لقب',
+            title_expire TEXT,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            draws INTEGER DEFAULT 0,
+            total_games INTEGER DEFAULT 0,
+            created_at TEXT,
+            last_seen TEXT,
+            unlocked_titles TEXT DEFAULT '[]',
+            unlocked_perks TEXT DEFAULT '[]'
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_event (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER,
+            event_name TEXT,
+            end_time TEXT,
+            extra_data TEXT,
+            reward_type TEXT,
+            reward_value TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS dice_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            dice_value INTEGER,
+            rolled_at TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS score_logs (
+            telegram_id INTEGER,
+            game_type TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (telegram_id, game_type)
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shop (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title_name TEXT UNIQUE,
+            cost INTEGER,
+            category TEXT,
+            item_type TEXT DEFAULT 'title'
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS redeem_codes (
+            code TEXT PRIMARY KEY,
+            title_name TEXT,
+            max_uses INTEGER,
+            current_uses INTEGER DEFAULT 0,
+            duration_hours INTEGER
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS redeem_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            code TEXT,
+            used_at TEXT
+        )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS offline_duels (
+            duel_id TEXT PRIMARY KEY,
+            creator_id INTEGER,
+            wager INTEGER,
+            rounds INTEGER,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
+        )""")
+    
     conn.commit()
     conn.close()
 
-init_event_table()
+# Initialize core configurations and structures
+init_db_schema()
 
-# 🎰 امتیازدهی جدید تاس‌ها
+# Seed advanced custom store items into the repository database seamlessly
+def seed_shop_items():
+    items = [
+        ("دوعل تا ۲۰ راند", 2000, "legendary", "perk_rounds"),
+        ("سقف شرط ۵۰۰ XP", 3500, "legendary", "perk_wager"),
+        ("تاس شانس", 5000, "legendary", "perk_luckydice"),
+        ("گلادیاتور نوپا", 200, "normal", "title"),
+        ("شکارچی شب", 600, "epic", "title"),
+        ("الماس برتر", 1200, "legendary", "title")
+    ]
+    for name, cost, cat, itype in items:
+        execute_write("""
+            INSERT INTO shop (title_name, cost, category, item_type) 
+            VALUES (%s, %s, %s, %s) ON CONFLICT (title_name) DO NOTHING
+        """, (name, cost, cat, itype))
+
+seed_shop_items()
+
+# ==========================================
+# LOGIC & SYSTEM RULES DEFINITIONS
+# ==========================================
 DICE_SCORES = {1: -5, 2: 5, 3: 10, 4: 15, 5: 25, 6: 40}
 CAT_NAMES = {"normal": "لقب عادی", "epic": "لقب افسانه‌ای", "legendary": "لقب لجندری"}
 
@@ -70,14 +321,96 @@ EVENT_NAMES_LIST = {
     22: "چالش روزانه گلادیاتورها 🎯"
 }
 
-# هش و حافظه موقت وضعیت‌ها و سیستم ضد اسپم جدید
-USER_DICE_COUNT = {}     # تعداد تاس‌های متوالی کاربر
-USER_DUEL_COUNT = {}     # تعداد دوئل‌های متوالی کاربر
-USER_MUTE_TIMEOUT = {}   # زمان پایان میوت کاربر (۲ دقیقه)
-
+# In-memory states trackers
+USER_DICE_COUNT = {}
+USER_DUEL_COUNT = {}
+USER_MUTE_TIMEOUT = {}
 DUEL_COOLDOWNS = {}
 ADMIN_STATES = {}
 PV_DUEL_STATES = {}
+
+def calculate_rank(score):
+    if score >= 14000: return "🌌 Infinity"
+    elif score >= 10000: return "🏆 Grandmaster"
+    elif score >= 7000: return "💎 Diamond"
+    elif score >= 4000: return "🥇 Gold"
+    elif score >= 1500: return "🥈 Silver"
+    else: return "🥉 Bronze I"
+
+def is_user_admin(telegram_id):
+    return int(telegram_id) == INITIAL_ADMIN_ID
+
+def get_top_10_ids():
+    rows = execute_read_all("SELECT telegram_id FROM users ORDER BY score DESC, total_games DESC LIMIT 10")
+    return [int(r['telegram_id']) for r in rows]
+
+def get_or_create_user(telegram_id, username):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user = execute_read_one("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
+    if not user:
+        execute_write("""
+            INSERT INTO users (telegram_id, username, score, rank, title, created_at, last_seen, unlocked_titles, unlocked_perks)
+            VALUES (%s, %s, 0, '🥉 Bronze I', 'بدون لقب', %s, %s, '[]', '[]')
+        """, (telegram_id, username, now_str, now_str))
+        user = execute_read_one("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
+    else:
+        execute_write("UPDATE users SET last_seen = %s, username = %s WHERE telegram_id = %s", (now_str, username, telegram_id))
+    
+    # Dynamic recalculation for the exclusive Infinity [GOD OF DICE] Rank shifting rule
+    top_10 = get_top_10_ids()
+    if int(telegram_id) in top_10:
+        user['title'] = "[GOD OF DICE]"
+    return user
+
+def update_stats(telegram_id, score_change, match_result):
+    user = execute_read_one("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
+    if not user:
+        return None
+    
+    current_score = user['score']
+    
+    # League 10,000+ XP absolute score rules scaling overriding
+    if current_score >= 10000:
+        if match_result == 'win':
+            score_change = 80
+        elif match_result == 'loss':
+            score_change = -100
+            
+    new_score = current_score + score_change
+    if new_score > 14000:
+        new_score = 14000
+    if new_score < 0:
+        new_score = 0
+        
+    new_rank = calculate_rank(new_score)
+    rank_changed = (new_rank != user['rank'])
+    
+    w_inc = 1 if match_result == 'win' else 0
+    l_inc = 1 if match_result == 'loss' else 0
+    d_inc = 1 if match_result == 'draw' else 0
+    g_inc = 1 if match_result in ['win', 'loss', 'draw'] else 0
+    
+    execute_write("""
+        UPDATE users 
+        SET score = %s, rank = %s, wins = wins + %s, losses = losses + %s, draws = draws + %s, total_games = total_games + %s
+        WHERE telegram_id = %s
+    """, (new_score, new_rank, w_inc, l_inc, d_inc, g_inc, telegram_id))
+    
+    return {"rank_changed": rank_changed, "new_rank": new_rank, "score": new_score}
+
+def get_top_players():
+    rows = execute_read_all("SELECT * FROM users ORDER BY score DESC, total_games DESC LIMIT 10")
+    top_10_ids = [int(r['telegram_id']) for r in rows]
+    for idx, r in enumerate(rows):
+        if int(r['telegram_id']) in top_10_ids:
+            rows[idx]['title'] = "[GOD OF DICE]"
+    return rows
+
+def log_score_source(telegram_id, game_type):
+    execute_write("""
+        INSERT INTO score_logs (telegram_id, game_type, count) VALUES (%s, %s, 1)
+        ON CONFLICT(telegram_id, game_type) DO UPDATE SET count = score_logs.count + 1
+    """, (telegram_id, game_type))
 
 def get_main_menu_keyboard():
     keyboard = [
@@ -88,7 +421,7 @@ def get_main_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ==========================================
-# سیستم هوشمند ضد اسپم و مانیتورینگ متوالی
+# SPAM DETECTION & MUTE SECURITY CORE
 # ==========================================
 async def check_spam_and_mute(update: Update, action_type: str) -> bool:
     user_id = update.effective_user.id
@@ -105,7 +438,6 @@ async def check_spam_and_mute(update: Update, action_type: str) -> bool:
     if action_type == "dice":
         USER_DICE_COUNT[user_id] = USER_DICE_COUNT.get(user_id, 0) + 1
         USER_DUEL_COUNT[user_id] = 0
-        
         if USER_DICE_COUNT[user_id] >= 10:
             USER_MUTE_TIMEOUT[user_id] = now + 120
             await update.message.reply_markdown(f"💀 **وضعیت سکوت!**\nکاربر @{update.effective_user.username} به دلیل پرتاب متوالی ۱۰ تاس، به مدت **۲ دقیقه** از بازی محروم شد! اتمسفر کلوب را متشنج نکن.")
@@ -114,7 +446,6 @@ async def check_spam_and_mute(update: Update, action_type: str) -> bool:
     elif action_type == "duel":
         USER_DUEL_COUNT[user_id] = USER_DUEL_COUNT.get(user_id, 0) + 1
         USER_DICE_COUNT[user_id] = 0
-        
         if USER_DUEL_COUNT[user_id] >= 10:
             USER_MUTE_TIMEOUT[user_id] = now + 120
             await update.message.reply_markdown(f"💀 **وضعیت سکوت دوئل!**\nکاربر @{update.effective_user.username} به دلیل ارسال ۱۰ درخواست دوئل رگباری، به مدت **۲ دقیقه** در لیست سیاه قرار گرفت!")
@@ -123,32 +454,35 @@ async def check_spam_and_mute(update: Update, action_type: str) -> bool:
     return True
 
 def get_current_active_event():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    ev = cursor.execute("SELECT * FROM active_event ORDER BY id DESC LIMIT 1").fetchone()
-    conn.close()
+    ev = execute_read_one("SELECT * FROM active_event ORDER BY id DESC LIMIT 1")
     if not ev:
         return None
-    
-    end_time = datetime.strptime(ev['end_time'], "%Y-%m-%d %H:%M:%S")
-    if datetime.now() > end_time:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM active_event")
-        conn.commit()
-        conn.close()
+    try:
+        end_time = datetime.strptime(ev['end_time'], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() > end_time:
+            execute_write("DELETE FROM active_event")
+            return None
+        return ev
+    except:
         return None
-    return ev
 
+# ==========================================
+# COMMAND HANDLERS
+# ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user.id, user.username if user.username else user.first_name)
     
+    # Process Offline Duel deep link parameter if available
+    if context.args and context.args[0].startswith("oduel_"):
+        token = context.args[0].replace("oduel_", "").strip()
+        await process_offline_duel_link(update, context, token)
+        return
+
     welcome_text = (
         f"⚔️ **به قلمرو خونین و بی‌رحم «نبرد تاس» خوش آمدی، {user.first_name}!** ⚔️\n\n"
         f"اینجا جایی نیست که با خواهش و تمنا امتیاز جمع کنی! اینجا کلوپ گلادیاتورهاست؛ "
-        f"جایی که شانس فقط به شجاع‌ها رو می‌کنه و یک پرتاب اشتباه, می‌تونه تو رو به قعر جدول بفرسته! 💀\n\n"
+        f"جایی که شانس فقط به شجاع‌ها رو می‌کنه و یک پرتاب اشتباه، می‌تونه تو رو به قعر جدول بفرسته! 💀\n\n"
         f"⚡ **تاس‌های عادلانه مستقر شدن، بازارچه تگ‌های جنگی آمادست و حریف‌ها دندون تیز کردن!**\n"
         f"دستت رو بذار روی دکمه، تاس رو پرتاب کن و ثابت کن شاهِ این میدونی یا فقط یه تماشاچی! 🔥"
     )
@@ -165,56 +499,61 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚔️ 🔴 **لیست فرمان‌های نبرد کلوب تاس (آپدیت بزرگ)** 🔴 ⚔️\n\n"
         "🎲 `🎲 پرتاب تاس` — پرتاب تاس انفرادی (دارای شانس حمله بحرانی متوالی)\n"
         "⚔️ `/duel [راند] [مقدار شرط]` — **دوئل شرطی در گروه** (حداکثر تا ۶ راند، شرط تا سقف ۵۰ امتیاز)\n"
+        "🔗 `/offline_duel [راند] [مقدار شرط]` — **ایجاد لینک دوئل غیابی اختصاصی**\n"
         "🏪 `🏪 بازارچه لقب` — خرید دسته‌بندی‌شده انواع تگ و لقب‌ها\n"
-        "👤 `👤 پروفایل من` — نمایش کارنامه جنگی با احتساب مساوی‌ها\n"
+        "👤 `👤 پروفایل من` — نمایش کارنامه جنگی با احتساب مساوی‌ها همراه با ویترین لقب‌ها\n"
         "🏆 `🏆 تالار افتخارات` — جدول مشاهیر و ۱۰ گلادیاتور برتر کلوب\n"
         "🔑 `/redeem [کد]` — فعال‌سازی کدهای هدیه و لقب‌های موقت ادمین\n"
     )
-    if is_user_admin(update.effective_user.id): help_text += "\n⚙️ `/admin` — کنترل پنل فوق پیشرفته اتاق فرماندهی"
+    if is_user_admin(update.effective_user.id): 
+        help_text += "\n⚙️ `/admin` — کنترل پنل فوق پیشرفته اتاق فرماندهی"
     await update.message.reply_markdown(help_text, reply_markup=get_main_menu_keyboard())
 
 # ==========================================
-# سیستم مدیریت پرتاب‌ها و حمله بحرانی
+# CRITICAL HIT MECHANICS & SOLO ROLLS
 # ==========================================
 def register_and_check_critical(telegram_id, current_dice):
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO dice_history (telegram_id, dice_value, rolled_at) VALUES (?, ?, ?)", (telegram_id, current_dice, now_str))
+    execute_write("INSERT INTO dice_history (telegram_id, dice_value, rolled_at) VALUES (%s, %s, %s)", (telegram_id, current_dice, now_str))
     
-    history = cursor.execute('''
+    history = execute_read_all("""
         SELECT dice_value FROM dice_history 
-        WHERE telegram_id = ? 
+        WHERE telegram_id = %s 
         ORDER BY rolled_at DESC LIMIT 3
-    ''', (telegram_id,)).fetchall()
+    """, (telegram_id,))
     
     is_critical = False
     if len(history) == 3:
-        if history[0][0] == history[1][0] == history[2][0]:
+        if history[0]['dice_value'] == history[1]['dice_value'] == history[2]['dice_value']:
             is_critical = True
-            cursor.execute("DELETE FROM dice_history WHERE telegram_id = ?", (telegram_id,))
+            execute_write("DELETE FROM dice_history WHERE telegram_id = %s", (telegram_id,))
             
-    conn.commit(); conn.close()
     return is_critical
-
-def log_score_source(telegram_id, game_type):
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO score_logs (telegram_id, game_type, count) VALUES (?, ?, 1)
-        ON CONFLICT(telegram_id, game_type) DO UPDATE SET count = count + 1
-    ''', (telegram_id, game_type))
-    conn.commit(); conn.close()
 
 async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_spam_and_mute(update, "dice"): return
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
     
-    title_tag = f" [{user_data['title']}]" if user_data['title'] != 'بدون لقب' else ""
+    top_10 = get_top_10_ids()
+    display_title = "[GOD OF DICE]" if user_id in top_10 else user_data['title']
+    title_tag = f" [{display_title}]" if display_title != 'بدون لقب' else ""
     
     dice_msg = await context.bot.send_dice(chat_id=update.effective_chat.id)
     dice_value = dice_msg.dice.value
-    await asyncio.sleep(3)
     
+    # Lucky Dice Item Perk Logic checking
+    perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
+    if dice_value == 1 and "perk_luckydice" in perks:
+        if user_data['score'] < 10000:
+            await asyncio.sleep(2)
+            await update.message.reply_markdown("🎲 **آیتم تاس شانس فعال شد!** عدد ۱ آمد، مجدداً یک تاس دیگر به عنوان شانس مجدد پرتاب می‌شود...")
+            dice_msg = await context.bot.send_dice(chat_id=update.effective_chat.id)
+            dice_value = dice_msg.dice.value
+        else:
+            await update.message.reply_markdown("⚠️ *آیتم تاس شانس در رنک و لیگ‌های بالای ۱۰۰۰۰ کاپ غیرفعال می‌باشد!*")
+
+    await asyncio.sleep(3)
     base_score = DICE_SCORES[dice_value]
     
     ev = get_current_active_event()
@@ -256,11 +595,12 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 {motivation}\n"
         f"🏆 **تغییرات امتیاز:** {sign}{score_gained} XP{ev_bonus_text}"
     )
-    if result and result["rank_changed"]: response += f"\n🎖️ **تغییر رتبه به: {result['new_rank']}**"
+    if result and result["rank_changed"]: 
+        response += f"\n🎖️ **تغییر رتبه به: {result['new_rank']}**"
     await update.message.reply_markdown(response, reply_markup=get_main_menu_keyboard())
 
 # ==========================================
-# سیستم دوئل گروهی (با پشتیبانی از شرط‌بندی)
+# GROUP & WAGER DUELS SYSTEM
 # ==========================================
 async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_spam_and_mute(update, "duel"): return
@@ -276,34 +616,32 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ **محدودیت ترافیک سرور!** تا {left} ثانیه دیگر نمی‌توانی دوئل جدیدی استارت کنی.")
         return
 
-    p2_msg_id = update.message.reply_to_message.message_id
-    p1_msg_id = update.message.message_id
-
     if p1.id == p2.id or p2.is_bot: return
+
+    p1_data = get_or_create_user(p1.id, p1.username if p1.username else p1.first_name)
+    p2_data = get_or_create_user(p2.id, p2.username if p2.username else p2.first_name)
+    perks = json.loads(p1_data['unlocked_perks'] if p1_data['unlocked_perks'] else '[]')
 
     rounds = 3
     wager = 0
+    max_rounds = 20 if "perk_rounds" in perks else 6
+    max_wager = 500 if "perk_wager" in perks else 50
+
     if context.args:
         try:
             rounds = int(context.args[0])
             if rounds < 1: rounds = 3
-            if rounds > 6: rounds = 6
+            if rounds > max_rounds: rounds = max_rounds
         except ValueError: pass
         
         if len(context.args) > 1:
             try:
                 wager = int(context.args[1])
                 if wager < 0: wager = 0
-                if wager > 50:
-                    await update.message.reply_text("❌ **خطای بالانس شاپ!** سقف شرط‌بندی در هر نبرد حداکثر **۵۰ امتیاز** است تا ثبات لیدربرد حفظ شود!")
+                if wager > max_wager:
+                    await update.message.reply_text(f"❌ **خطای بالانس شاپ!** سقف شرط‌بندی شما حداکثر **{max_wager} امتیاز** است.")
                     return
             except ValueError: pass
-
-    p1_name = p1.username if p1.username else p1.first_name
-    p2_name = p2.username if p2.username else p2.first_name
-
-    p1_data = get_or_create_user(p1.id, p1_name)
-    p2_data = get_or_create_user(p2.id, p2_name)
 
     if wager > 0:
         if p1_data['score'] < wager:
@@ -312,6 +650,11 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if p2_data['score'] < wager:
             await update.message.reply_text(f"❌ امتیاز حریف شما برای این شرط‌بندی کافی نیست! موجودی حریف: {p2_data['score']} XP")
             return
+
+    p1_name = p1.username if p1.username else p1.first_name
+    p2_name = p2.username if p2.username else p2.first_name
+    p1_msg_id = update.message.message_id
+    p2_msg_id = update.message.reply_to_message.message_id
 
     wager_text = f"💰 **شرط نبرد:** {wager} XP (مجموعاً {wager * 2} امتیاز در وسط زمین!)\n" if wager > 0 else ""
 
@@ -326,7 +669,133 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==========================================
-# سیستم تاپ پلیرها و هندل کالبک‌ها
+# OFFLINE DUEL INHERITANCE SYSTEM (قابلیت جدید)
+# ==========================================
+async def offline_duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
+    perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
+
+    rounds = 3
+    wager = 0
+    max_rounds = 20 if "perk_rounds" in perks else 6
+    max_wager = 500 if "perk_wager" in perks else 50
+
+    if context.args:
+        try:
+            rounds = int(context.args[0])
+            if rounds < 1: rounds = 3
+            if rounds > max_rounds: rounds = max_rounds
+        except ValueError: pass
+        if len(context.args) > 1:
+            try:
+                wager = int(context.args[1])
+                if wager < 0: wager = 0
+                if wager > max_wager:
+                    await update.message.reply_text(f"❌ سقف شرط‌بندی شما {max_wager} XP می‌باشد.")
+                    return
+            except ValueError: pass
+
+    if wager > 0 and user_data['score'] < wager:
+        await update.message.reply_text(f"❌ امتیاز کافی برای شرط بندی ندارید! موجودی: {user_data['score']} XP")
+        return
+
+    # Generate Secure Unique Link token ID
+    token = "".join(random.choices(string.ascii_letters + string.digits, k=10))
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    execute_write("""
+        INSERT INTO offline_duels (duel_id, creator_id, wager, rounds, status, created_at)
+        VALUES (%s, %s, %s, %s, 'pending', %s)
+    """, (token, user_id, wager, rounds, now_str))
+
+    bot_info = await context.bot.get_me()
+    duel_link = f"https://t.me/{bot_info.username}?start=oduel_{token}"
+    
+    response = (
+        f"🔗 **لینک دوئل غیابی اختصاصی با موفقیت ساخته شد!**\n\n"
+        f"🏁 تعداد راند: {rounds}\n"
+        f"💰 مبلغ شرط: {wager} XP\n"
+        f"📌 لینک را برای حریف خود بفرستید تا نبرد به صورت خودکار آغاز شود:\n\n"
+        f"`{duel_link}`"
+    )
+    await update.message.reply_markdown(response)
+
+async def process_offline_duel_link(update: Update, context: ContextTypes.DEFAULT_TYPE, token: str):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+    user_data = get_or_create_user(user_id, user_name)
+    
+    duel = execute_read_one("SELECT * FROM offline_duels WHERE duel_id = %s", (token,))
+    if not duel:
+        await update.message.reply_text("❌ لینک دوئل غیابی نامعتبر است یا پیدا نشد.")
+        return
+        
+    if duel['status'] != 'pending':
+        await update.message.reply_text("❌ این لینک قبلاً استفاده شده و منقضی شده است.")
+        return
+        
+    if int(duel['creator_id']) == user_id:
+        await update.message.reply_text("❌ شما نمی‌توانید با لینک خودتان وارد دوئل غیابی شوید!")
+        return
+
+    creator = execute_read_one("SELECT username FROM users WHERE telegram_id = %s", (duel['creator_id'],))
+    creator_name = creator['username'] if creator else f"مبارز {duel['creator_id']}"
+    
+    keyboard = [[
+        InlineKeyboardButton("⚔️ قبول نبرد و شروع خودکار", callback_data=f"oduel_accept_{token}"),
+        InlineKeyboardButton("🏳️ رد نبرد", callback_data=f"oduel_reject_{token}")
+    ]]
+    
+    wager_txt = f"💰 **مبلغ شرط نبرد:** {duel['wager']} XP\n" if duel['wager'] > 0 else ""
+    await update.message.reply_markdown(
+        f"⚔️ **دعوت‌نامه دوئل غیابی اختصاصی!**\n\n"
+        f"👤 **سازنده چالش:** {creator_name}\n"
+        f"🏁 **تعداد راند:** {duel['rounds']}\n"
+        f"{wager_txt}"
+        f"آیا آماده این چالش سرنوشت‌ساز هستی؟",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# ==========================================
+# SHOWCASE / WARDROBE INTERFACE (قابلیت جدید)
+# ==========================================
+async def wardrobe_interface(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id=None):
+    query = update.callback_query
+    user_id = target_user_id if target_user_id else update.effective_user.id
+    user_data = execute_read_one("SELECT * FROM users WHERE telegram_id = %s", (user_id,))
+    
+    unlocked_titles = json.loads(user_data['unlocked_titles'] if user_data['unlocked_titles'] else '[]')
+    all_shop_items = execute_read_all("SELECT title_name, category, item_type FROM shop")
+    
+    keyboard = []
+    
+    # Prepend basic/default title option
+    if user_data['title'] == 'بدون لقب':
+        keyboard.append([InlineKeyboardButton("✅ بدون لقب (فعال)", callback_data="wardrobe_set_none")])
+    else:
+        keyboard.append([InlineKeyboardButton("🔓 بدون لقب", callback_data="wardrobe_set_none")])
+        
+    for item in all_shop_items:
+        t_name = item['title_name']
+        if t_name in unlocked_titles:
+            if user_data['title'] == t_name:
+                keyboard.append([InlineKeyboardButton(f"✅ {t_name} (فعال)", callback_data=f"wardrobe_active_{t_name}")])
+            else:
+                keyboard.append([InlineKeyboardButton(f"🔓 {t_name}", callback_data=f"wardrobe_select_{t_name}")])
+        else:
+            keyboard.append([InlineKeyboardButton(f"🔒 {t_name} (قفل)", callback_data=f"wardrobe_locked_{t_name}")])
+            
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data="wardrobe_back_profile")])
+    
+    text = "👑 **ویترین و صندوقچه اختصاصی لقب‌های شما**\nلقب مورد نظر خود را انتخاب کنید تا روی کارت عضویت شما فعال شود:"
+    if query:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==========================================
+# LEADERS AND PROFILE CONTROLLERS
 # ==========================================
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_players = get_top_players()
@@ -348,6 +817,41 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_markdown(leaderboard_text, reply_markup=InlineKeyboardMarkup(keyboard))
     return leaderboard_text, keyboard
 
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
+    win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
+    
+    top_10 = get_top_10_ids()
+    display_title = "[GOD OF DICE]" if user_id in top_10 else user['title']
+    title_display = f"🏅 **لقب ویژه:** {display_title}" if display_title != 'بدون لقب' else "🏅 **لقب ویژه:** ندارد"
+    
+    profile_text = (
+        f"🎮 ━━━ **کارت عضویت کلوب نبرد** ━━━ 🎮\n\n"
+        f"👤 **نام جنگجو:** {user['username']}\n{title_display}\n"
+        f"👑 **رتبه فعلی:** {user['rank']}\n💎 **کل امتیازات:** {user['score']} XP\n\n"
+        f"📊 **آمار جنگ‌ها:**\n⚔️ کل مسابقات: {user['total_games']}\n"
+        f"🟢 پیروزی: {user['wins']}  |  🤝 مساوی: {user['draws']}  |  🔴 شکست: {user['losses']}\n🔥 **نرخ برد:** {win_rate}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    
+    inline_kb = [[InlineKeyboardButton("👑 انتخاب لقب (ویترین)", callback_data="wardrobe_view")]]
+    if update.message: 
+        await update.message.reply_markdown(profile_text, reply_markup=InlineKeyboardMarkup(inline_kb))
+    return profile_text
+
+async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
+    keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data="shopmain_cat_normal")],
+                [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data="shopmain_cat_epic")],
+                [InlineKeyboardButton("👑 لقب لجندری", callback_data="shopmain_cat_legendary")]]
+    if update.message:
+        await update.message.reply_text(f"🏪 **به بازارچه لقب‌ها خوش آمدی!**\n💰 موجودی: {user['score']} XP\n\nانتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==========================================
+# CALLBACKS INTERCEPTOR ENGINE
+# ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split("_")
@@ -393,6 +897,129 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(text, parse_mode="Markdown")
         return
 
+    # Handle Wardrobe Custom Actions
+    if query.data == "wardrobe_view" or query.data == "wardrobe_back_profile":
+        if query.data == "wardrobe_back_profile":
+            await query.answer()
+            # Redirect smoothly back to text profile format layout
+            user = get_or_create_user(user_id, query.from_user.username if query.from_user.username else query.from_user.first_name)
+            win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
+            top_10 = get_top_10_ids()
+            display_title = "[GOD OF DICE]" if user_id in top_10 else user['title']
+            title_display = f"🏅 **لقب ویژه:** {display_title}" if display_title != 'بدون لقب' else "🏅 **لقب ویژه:** ندارد"
+            profile_text = (
+                f"🎮 ━━━ **کارت عضویت کلوب نبرد** ━━━ 🎮\n\n"
+                f"👤 **نام جنگجو:** {user['username']}\n{title_display}\n"
+                f"👑 **رتبه فعلی:** {user['rank']}\n💎 **کل امتیازات:** {user['score']} XP\n\n"
+                f"📊 **آمار جنگ‌ها:**\n⚔️ کل مسابقات: {user['total_games']}\n"
+                f"🟢 پیروزی: {user['wins']}  |  🤝 مساوی: {user['draws']}  |  🔴 شکست: {user['losses']}\n🔥 **نرخ برد:** {win_rate}%\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+            inline_kb = [[InlineKeyboardButton("👑 انتخاب لقب (ویترین)", callback_data="wardrobe_view")]]
+            await query.edit_message_text(profile_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_kb))
+        else:
+            await query.answer()
+            await wardrobe_interface(update, context)
+        return
+
+    if query.data == "wardrobe_set_none":
+        execute_write("UPDATE users SET title = 'بدون لقب' WHERE telegram_id = %s", (user_id,))
+        await query.answer("✅ لقب فعال شما با موفقیت حذف شد.", show_alert=True)
+        await wardrobe_interface(update, context)
+        return
+
+    if data[0] == "wardrobe":
+        action = data[1]
+        target_title = "_".join(data[2:])
+        if action == "locked":
+            await query.answer("🔒 این لقب قفل است. می‌توانید آن را از بازارچه خریداری کنید!", show_alert=True)
+        elif action == "select":
+            execute_write("UPDATE users SET title = %s WHERE telegram_id = %s", (target_title, user_id))
+            await query.answer(f"✅ لقب «{target_title}» روی مشخصات شما فعال شد.", show_alert=True)
+            await wardrobe_interface(update, context)
+        elif action == "active":
+            await query.answer("✨ این لقب در حال حاضر فعال است.", show_alert=True)
+        return
+
+    # Handle Offline Duels Process
+    if data[0] == "oduel":
+        action = data[1]
+        token = data[2]
+        
+        duel = execute_read_one("SELECT * FROM offline_duels WHERE duel_id = %s", (token,))
+        if not duel or duel['status'] != 'pending':
+            await query.answer("❌ این چالش دیگر معتبر نیست.", show_alert=True)
+            return
+
+        if action == "reject":
+            execute_write("UPDATE offline_duels SET status = 'rejected' WHERE duel_id = %s", (token,))
+            await query.edit_message_text("🏳️ درخواست چالش دوئل غیابی رد شد.")
+            return
+
+        if action == "accept":
+            p1_id = int(duel['creator_id'])
+            p2_id = user_id
+            wager = int(duel['wager'])
+            rounds = int(duel['rounds'])
+            
+            p1_chk = execute_read_one("SELECT score, username FROM users WHERE telegram_id = %s", (p1_id,))
+            p2_chk = execute_read_one("SELECT score, username FROM users WHERE telegram_id = %s", (p2_id,))
+            
+            if wager > 0:
+                if not p1_chk or p1_chk['score'] < wager:
+                    await query.answer("❌ موجودی امتیاز سازنده چالش کافی نیست!", show_alert=True)
+                    return
+                if not p2_chk or p2_chk['score'] < wager:
+                    await query.answer("❌ موجودی امتیاز شما کافی نیست!", show_alert=True)
+                    return
+
+            # Lock the match immediately
+            execute_write("UPDATE offline_duels SET status = 'accepted' WHERE duel_id = %s", (token,))
+            await query.answer()
+            await query.edit_message_text("⚔️ **چالش پذیرفته شد! شبیه‌سازی دوئل غیابی آغاز می‌شود...**")
+            
+            p1_name = p1_chk['username']
+            p2_name = p2_chk['username']
+            
+            p1_total, p2_total = 0, 0
+            
+            # Execute automatic randomized calculations simulating dice rolling rounds
+            for _ in range(rounds):
+                p1_total += random.randint(1, 6)
+                p2_total += random.randint(1, 6)
+                
+            ev = get_current_active_event()
+            win_xp, lose_xp = 40, 5
+            if ev and ev['event_id'] == 1: 
+                win_xp, lose_xp = 80, 10
+                
+            result_text = f"🏁 **نتیجه نهایی دوئل غیابی اختصاصی:**\n\n👤 {p1_name}: {p1_total} امتیاز تاس\n👤 {p2_name}: {p2_total} امتیاز تاس\n\n"
+            
+            if p1_total > p2_total:
+                total_win = win_xp + wager
+                total_lose = lose_xp - wager
+                result_text += f"🏆 **برنده چالش:** {p1_name} (+{total_win} XP)\n🏅 بازنده: {p2_name} ({total_lose} XP)"
+                update_stats(p1_id, total_win, 'win')
+                update_stats(p2_id, total_lose, 'loss')
+                log_score_source(p1_id, "offline_duel")
+            elif p2_total > p1_total:
+                total_win = win_xp + wager
+                total_lose = lose_xp - wager
+                result_text += f"🏆 **برنده چالش:** {p2_name} (+{total_win} XP)\n🏅 بازنده: {p1_name} ({total_lose} XP)"
+                update_stats(p2_id, total_win, 'win')
+                update_stats(p1_id, total_lose, 'loss')
+                log_score_source(p2_id, "offline_duel")
+            else:
+                result_text += f"🤝 **نتیجه کاملاً مساوی شد! امتیازی تغییر نکرد.**"
+                update_stats(p1_id, 0, 'draw')
+                update_stats(p2_id, 0, 'draw')
+                
+            await context.bot.send_message(chat_id=chat_id, text=result_text)
+            try:
+                await context.bot.send_message(chat_id=p1_id, text=f"🔔 **یکی از لینک‌های دوئل غیابی شما انجام شد!**\n\n{result_text}")
+            except: pass
+            return
+
     if query.data == "pv_duel_start":
         if query.message.chat.type != "private":
             await query.answer("❌ این قابلیت فقط در پیوی ربات کار می‌کند!", show_alert=True)
@@ -418,10 +1045,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ حریف در حال استراحت است.", show_alert=True); return
             await query.answer(); await query.edit_message_text("⚔️ **دوئل آغاز شد! در حال پرتاب تاس‌ها...**")
             
-            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            p1_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()['username']
-            p2_name = cursor.execute('SELECT username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()['username']
-            conn.close()
+            p1_name = execute_read_one('SELECT username FROM users WHERE telegram_id = %s', (p1_id,))['username']
+            p2_name = execute_read_one('SELECT username FROM users WHERE telegram_id = %s', (p2_id,))['username']
 
             p1_total, p2_total = 0, 0
             
@@ -488,28 +1113,25 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ این درخواست دوئل برای شما ارسال نشده است!", show_alert=True)
                 return
             
-            # چک مجدد موجودی کاربران قبل از شروع رسمی مسابقه شرطی
-            conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-            p1_chk = cursor.execute('SELECT score, username FROM users WHERE telegram_id = ?', (p1_id,)).fetchone()
-            p2_chk = cursor.execute('SELECT score, username FROM users WHERE telegram_id = ?', (p2_id,)).fetchone()
+            p1_chk = execute_read_one('SELECT score, username FROM users WHERE telegram_id = %s', (p1_id,))
+            p2_chk = execute_read_one('SELECT score, username FROM users WHERE telegram_id = %s', (p2_id,))
             
             if wager > 0:
                 if not p1_chk or p1_chk['score'] < wager:
-                    await query.answer("❌ موجودی شروع‌کننده دوئل کافی نیست!", show_alert=True); conn.close(); return
+                    await query.answer("❌ موجودی شروع‌کننده دوئل کافی نیست!", show_alert=True); return
                 if not p2_chk or p2_chk['score'] < wager:
-                    await query.answer("❌ موجودی شما برای تایید این شرط کافی نیست!", show_alert=True); conn.close(); return
+                    await query.answer("❌ موجودی شما برای تایید این شرط کافی نیست!", show_alert=True); return
             
             now = datetime.now().timestamp()
             if p1_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1_id]:
-                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
+                await query.answer("❌ محدودیت زمانی کول‌داون فعال است!", show_alert=True); return
             if p2_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p2_id]:
-                await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
+                await query.answer("❌ محدودیت زمانی کول‌داون فعال است!", show_alert=True); return
                 
             await query.answer(); await query.edit_message_text("⚔️ **نبرد گروهی تایید شد! بازی شروع می‌شود...**")
             
             p1_name = p1_chk['username'] if p1_chk else f"Player {p1_id}"
             p2_name = p2_chk['username'] if p2_chk else f"Player {p2_id}"
-            conn.close()
 
             p1_total, p2_total = 0, 0
             
@@ -533,7 +1155,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             ev = get_current_active_event()
             
-            # فرمول پایه برد و باخت در دوئل معمولی + افزودن مقدار شرط به فاکتور نهایی
             win_xp, lose_xp = 40, 5
             if ev and ev['event_id'] == 1: win_xp, lose_xp = 80, 10
 
@@ -542,13 +1163,13 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if p1_total > p2_total:
                 total_win = win_xp + wager
                 total_lose = lose_xp - wager
-                result_text += f"🏆 **برنده: {p1_name} (+{total_win} XP)**\n🏅 بازنده: {p2_name} ({'+' if total_lose >= 0 else ''}{total_lose} XP)"
+                result_text += f"🏆 **برنده: {p1_name} (+{total_win} XP)**\n🏅 بازنده: {p2_name} ({total_lose} XP)"
                 update_stats(p1_id, total_win, 'win'); update_stats(p2_id, total_lose, 'loss')
                 log_score_source(p1_id, "group_duel")
             elif p2_total > p1_total:
                 total_win = win_xp + wager
                 total_lose = lose_xp - wager
-                result_text += f"🏆 **برنده: {p2_name} (+{total_win} XP)**\n🏅 بازنده: {p1_name} ({'+' if total_lose >= 0 else ''}{total_lose} XP)"
+                result_text += f"🏆 **برنده: {p2_name} (+{total_win} XP)**\n🏅 بازنده: {p1_name} ({total_lose} XP)"
                 update_stats(p2_id, total_win, 'win'); update_stats(p1_id, total_lose, 'loss')
                 log_score_source(p2_id, "group_duel")
             else:
@@ -563,7 +1184,71 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data[0] == "shop": await shop_callback(update, context)
 
 # ==========================================
-# مانیتورینگ متون و اتصال دکمه‌ها
+# ADVANCED STORES CALLBACK HANDLERS
+# ==========================================
+async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; user_id = query.from_user.id; data = query.data
+    await query.answer()
+    
+    if data.startswith("shopmain_cat_"):
+        cat_type = data.replace("shopmain_cat_", "")
+        shop_items = execute_read_all("SELECT id, title_name, cost, item_type FROM shop WHERE category = %s", (cat_type,))
+        if not shop_items:
+            await query.edit_message_text(f"🔒 محصولی در این بخش موجود نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="shopmain_back")]])); return
+            
+        ev = get_current_active_event()
+        discount_pct = 0
+        if ev and ev['event_id'] == 15:
+            discount_pct = int(json.loads(ev['extra_data']).get('discount', 0))
+
+        keyboard = []
+        for item in shop_items:
+            final_cost = item['cost']
+            if discount_pct > 0:
+                final_cost = int(final_cost * (100 - discount_pct) / 100)
+            keyboard.append([InlineKeyboardButton(f"{item['title_name']} 💰 {final_cost} XP", callback_data=f"shopbuy_id_{item['id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="shopmain_back")])
+        await query.edit_message_text(f"🛍️ لیست لقب‌ها و آیتم‌های بخش: {CAT_NAMES[cat_type]}", reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    elif data == "shopmain_back":
+        keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data="shopmain_cat_normal")],
+                    [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data="shopmain_cat_epic")],
+                    [InlineKeyboardButton("👑 لقب لجندری", callback_data="shopmain_cat_legendary")]]
+        await query.edit_message_text("🏪 **بازارچه لقب‌ها و آیتم‌ها**", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("shopbuy_id_"):
+        item_id = int(data.split("_")[2])
+        item = execute_read_one("SELECT * FROM shop WHERE id = %s", (item_id,))
+        if not item: return
+        
+        ev = get_current_active_event()
+        final_cost = item['cost']
+        if ev and ev['event_id'] == 15:
+            pct = int(json.loads(ev['extra_data']).get('discount', 0))
+            final_cost = int(final_cost * (100 - pct) / 100)
+
+        user = get_or_create_user(user_id, query.from_user.username if query.from_user.username else query.from_user.first_name)
+        if user['score'] < final_cost:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="❌ امتیاز کافی نداری مشتی!"); return
+            
+        new_score = user['score'] - final_cost
+        
+        # Save inventory according to item types (perks vs structural vanity titles)
+        unlocked_titles = json.loads(user['unlocked_titles'] if user['unlocked_titles'] else '[]')
+        unlocked_perks = json.loads(user['unlocked_perks'] if user['unlocked_perks'] else '[]')
+        
+        if item['item_type'] != 'title':
+            if item['item_type'] not in unlocked_perks:
+                unlocked_perks.append(item['item_type'])
+            execute_write('UPDATE users SET score = %s, unlocked_perks = %s WHERE telegram_id = %s', (new_score, json.dumps(unlocked_perks), user_id))
+            await query.edit_message_text(f"🎉 قابلیت ویژه « {item['title_name']} » فعال و به حساب شما متصل شد!")
+        else:
+            if item['title_name'] not in unlocked_titles:
+                unlocked_titles.append(item['title_name'])
+            execute_write('UPDATE users SET score = %s, title = %s, unlocked_titles = %s WHERE telegram_id = %s', (new_score, item['title_name'], json.dumps(unlocked_titles), user_id))
+            await query.edit_message_text(f"🎉 تگ ویژه « {item['title_name']} » فعال و به کمد افتخارات شما اضافه شد!")
+
+# ==========================================
+# MESSAGES MONITORING & STATE ROUTING
 # ==========================================
 async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -572,22 +1257,22 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
     
     if is_user_admin(user_id) and ("تالار مشاهیر" in text or "۱۰ گلادیاتور برتر" in text) and "XP" in text:
         lines = text.split("\n"); current_username = None; updated_count = 0
-        conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
         for line in lines:
             user_match = re.search(r'(?:\d+\.\s*|👑|⚡|🛡️|🎖️)\s*([A-Za-z0-9_]+)', line)
             if user_match: current_username = user_match.group(1).strip()
             score_match = re.search(r'(?:⭐\s*|\b)(\d+)\s*XP', line)
             if score_match and current_username:
                 score_val = int(score_match.group(1)); rank_val = calculate_rank(score_val)
-                user_check = cursor.execute("SELECT 1 FROM users WHERE username = ?", (current_username,)).fetchone()
+                user_check = execute_read_one("SELECT 1 FROM users WHERE username = %s", (current_username,))
                 if user_check:
-                    cursor.execute("UPDATE users SET score = ?, rank = ? WHERE username = ?", (score_val, rank_val, current_username))
+                    execute_write("UPDATE users SET score = %s, rank = %s WHERE username = %s", (score_val, rank_val, current_username))
                 else:
                     fake_id = -random.randint(1000000, 9999999); now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute("INSERT INTO users (telegram_id, username, score, rank, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
-                                   (fake_id, current_username, score_val, rank_val, now_str, now_str))
+                    execute_write("""
+                        INSERT INTO users (telegram_id, username, score, rank, created_at, last_seen, unlocked_titles, unlocked_perks) 
+                        VALUES (%s, %s, %s, %s, %s, %s, '[]', '[]')
+                    """, (fake_id, current_username, score_val, rank_val, now_str, now_str))
                 updated_count += 1; current_username = None
-        conn.commit(); conn.close()
         if updated_count > 0:
             await update.message.reply_text(f"✅ آمار {updated_count} کاربر بازیابی و ثبت شد.")
             return
@@ -683,16 +1368,14 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             hours = float(parts[4])
             param = parts[5]
             rew_type = parts[6]
-            
             await finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, text)
             return
 
         elif state == "WAITING_FOR_BROADCAST":
             del ADMIN_STATES[user_id]
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            rows = cursor.execute('SELECT telegram_id FROM users').fetchall(); conn.close()
+            rows = execute_read_all('SELECT telegram_id FROM users')
             for row in rows:
-                try: await context.bot.send_message(chat_id=row[0], text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
+                try: await context.bot.send_message(chat_id=row['telegram_id'], text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
                 except: continue
             await update.message.reply_text("✅ پیام همگانی فرستاده شد.")
         elif state == "WAITING_FOR_CUSTOM_USER":
@@ -704,15 +1387,11 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             try: target_score = int(text)
             except ValueError: await update.message.reply_text("❌ خطا!"); return
             new_rank = calculate_rank(target_score)
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            cursor.execute("UPDATE users SET score = ?, rank = ? WHERE username = ?", (target_score, new_rank, target_username))
-            changes = conn.total_changes; conn.commit(); conn.close()
+            changes = execute_write("UPDATE users SET score = %s, rank = %s WHERE username = %s", (target_score, new_rank, target_username))
             await update.message.reply_text(f"🚀 امتیاز کاربر @{target_username} تغییر کرد." if changes > 0 else "❌ کاربر یافت نشد.")
         elif state == "WAITING_FOR_USERNAME_RESET":
             del ADMIN_STATES[user_id]; target = text.replace("@", "")
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            cursor.execute("UPDATE users SET score = 0, rank = '🥉 Bronze I', title = 'بدون لقب' WHERE username = ?", (target,))
-            changes = conn.total_changes; conn.commit(); conn.close()
+            changes = execute_write("UPDATE users SET score = 0, rank = '🥉 Bronze I', title = 'بدون لقب' WHERE username = %s", (target,))
             await update.message.reply_text("🧹 حساب کاربر صفر شد." if changes > 0 else "❌ پیدا نشد.")
         elif state == "WAITING_FOR_REDEEM_CODE":
             ADMIN_STATES[user_id] = f"REDEEM_TITLE_{text}"
@@ -732,10 +1411,8 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             del ADMIN_STATES[user_id]
             try: rc_hours = int(text)
             except ValueError: return
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-            cursor.execute('INSERT OR REPLACE INTO redeem_codes (code, title_name, max_uses, duration_hours) VALUES (?, ?, ?, ?)',
-                           (rc_code, rc_title, rc_uses, rc_hours))
-            conn.commit(); conn.close()
+            execute_write('INSERT INTO redeem_codes (code, title_name, max_uses, duration_hours) VALUES (%s, %s, %s, %s) ON CONFLICT(code) DO UPDATE SET title_name=EXCLUDED.title_name, max_uses=EXCLUDED.max_uses, duration_hours=EXCLUDED.duration_hours',
+                          (rc_code, rc_title, rc_uses, rc_hours))
             await update.message.reply_text(f"✅ ردیم کد `{rc_code}` ساخته شد.")
         elif state == "WAITING_FOR_SHOP_TITLE":
             ADMIN_STATES[user_id] = f"SHOP_CAT_{text}"
@@ -748,29 +1425,23 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
             del ADMIN_STATES[user_id]
             try: price = int(text)
             except ValueError: return
-            conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
             try:
-                cursor.execute("INSERT INTO shop (title_name, cost, category) VALUES (?, ?, ?)", (new_title, price, cat_type))
-                conn.commit()
+                execute_write("INSERT INTO shop (title_name, cost, category, item_type) VALUES (%s, %s, %s, 'title')", (new_title, price, cat_type))
                 await update.message.reply_text(f"✅ لقب « {new_title} » به شاپ اضافه شد.")
-            except sqlite3.IntegrityError: await update.message.reply_text("❌ این تگ قبلاً ثبت شده است.")
-            conn.close()
+            except: 
+                await update.message.reply_text("❌ این تگ قبلاً ثبت شده است.")
         return
 
     clean_code = text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
     if clean_code:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cdata = cursor.execute('SELECT 1 FROM redeem_codes WHERE code = ?', (clean_code,)).fetchone()
-        conn.close()
+        cdata = execute_read_one('SELECT 1 FROM redeem_codes WHERE code = %s', (clean_code,))
         if cdata:
             context.args = [clean_code]
             await redeem_command(update, context)
             return
 
 # ==========================================
-# نهایی‌سازی رویداد و ارسال همگانی با دکمه شیشه‌ای
+# EVENT STRUCTURAL SCHEDULER PROTOCOLS
 # ==========================================
 async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, rew_val):
     admin_id = update.effective_user.id
@@ -783,17 +1454,13 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
     if ev_id == 2: ex_data["dice"] = param
     if ev_id == 15: ex_data["discount"] = param
     
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM active_event")
-    cursor.execute("""
+    execute_write("DELETE FROM active_event")
+    execute_write("""
         INSERT INTO active_event (event_id, event_name, end_time, extra_data, reward_type, reward_value)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
     """, (ev_id, EVENT_NAMES_LIST[ev_id], end_time_str, json.dumps(ex_data), rew_type, rew_val))
     
-    users = cursor.execute("SELECT telegram_id FROM users").fetchall()
-    conn.commit()
-    conn.close()
+    users = execute_read_all("SELECT telegram_id FROM users")
     
     msg_broadcast = (
         f"🚨 **رویداد فوق‌العاده و جدید کلوب آغاز شد!** 🚨\n\n"
@@ -804,99 +1471,20 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
     )
     
     context.chat_data["admin_net_active"] = True
-    
-    # اضافه شدن دکمه شیشه‌ای هوشمند مستقیماً زیر پیام همگانی
     broadcast_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🕹️ جزئیات رویداد زنده", callback_data="user_check_event")]])
     
     try: await context.bot.send_message(chat_id=update.effective_chat.id, text=msg_broadcast, reply_markup=broadcast_markup, parse_mode="Markdown")
     except: pass
     
     for u in users:
-        try: await context.bot.send_message(chat_id=u[0], text=msg_broadcast, reply_markup=broadcast_markup, parse_mode="Markdown")
+        try: await context.bot.send_message(chat_id=u['telegram_id'], text=msg_broadcast, reply_markup=broadcast_markup, parse_mode="Markdown")
         except: continue
 
 # ==========================================
-# سیستم فروشگاه و لقب‌ها
+# EXPANSIVE PROMO CODE REDEMPTION SYSTEMS
 # ==========================================
-async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-    win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
-    title_display = f"🏅 **لقب ویژه:** {user['title']}" if user['title'] != 'بدون لقب' else "🏅 **لقب ویژه:** ندارد"
-    
-    profile_text = (
-        f"🎮 ━━━ **کارت عضویت کلوب نبرد** ━━━ 🎮\n\n"
-        f"👤 **نام جنگجو:** {user['username']}\n{title_display}\n"
-        f"👑 **رتبه فعلی:** {user['rank']}\n💎 **کل امتیازات:** {user['score']} XP\n\n"
-        f"📊 **آمار جنگ‌ها:**\n⚔️ کل مسابقات: {user['total_games']}\n"
-        f"🟢 پیروزی: {user['wins']}  |  🤝 مساوی: {user['draws']}  |  🔴 شکست: {user['losses']}\n🔥 **نرخ برد:** {win_rate}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
-    )
-    if update.message: await update.message.reply_markdown(profile_text, reply_markup=get_main_menu_keyboard())
-    return profile_text
-
-async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-    keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data="shopmain_cat_normal")],
-                [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data="shopmain_cat_epic")],
-                [InlineKeyboardButton("👑 لقب لجندری", callback_data="shopmain_cat_legendary")]]
-    if update.message:
-        await update.message.reply_text(f"🏪 **به بازارچه لقب‌ها خوش آمدی!**\n💰 موجودی: {user['score']} XP\n\nانتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; user_id = query.from_user.id; data = query.data
-    await query.answer()
-    
-    if data.startswith("shopmain_cat_"):
-        cat_type = data.replace("shopmain_cat_", "")
-        conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-        shop_items = cursor.execute("SELECT id, title_name, cost FROM shop WHERE category = ?", (cat_type,)).fetchall(); conn.close()
-        if not shop_items:
-            await query.edit_message_text(f"🔒 محصولی در این بخش موجود نیست.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="shopmain_back")]])); return
-            
-        ev = get_current_active_event()
-        discount_pct = 0
-        if ev and ev['event_id'] == 15:
-            discount_pct = int(json.loads(ev['extra_data']).get('discount', 0))
-
-        keyboard = []
-        for item in shop_items:
-            final_cost = item['cost']
-            if discount_pct > 0:
-                final_cost = int(final_cost * (100 - discount_pct) / 100)
-            keyboard.append([InlineKeyboardButton(f"{item['title_name']} 💰 {final_cost} XP", callback_data=f"shopbuy_id_{item['id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="shopmain_back")])
-        await query.edit_message_text(f"🛍️ لیست لقب‌های بخش: {CAT_NAMES[cat_type]}", reply_markup=InlineKeyboardMarkup(keyboard))
-        
-    elif data == "shopmain_back":
-        keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data="shopmain_cat_normal")],
-                    [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data="shopmain_cat_epic")],
-                    [InlineKeyboardButton("👑 لقب لجندری", callback_data="shopmain_cat_legendary")]]
-        await query.edit_message_text("🏪 **بازارچه لقب‌ها**", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data.startswith("shopbuy_id_"):
-        item_id = int(data.split("_")[2])
-        conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-        item = cursor.execute("SELECT * FROM shop WHERE id = ?", (item_id,)).fetchone()
-        if not item: conn.close(); return
-        
-        ev = get_current_active_event()
-        final_cost = item['cost']
-        if ev and ev['event_id'] == 15:
-            pct = int(json.loads(ev['extra_data']).get('discount', 0))
-            final_cost = int(final_cost * (100 - pct) / 100)
-
-        user = get_or_create_user(user_id, query.from_user.username if query.from_user.username else query.from_user.first_name)
-        if user['score'] < final_cost:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="❌ امتیاز کافی نداری مشتی!"); conn.close(); return
-        new_score = user['score'] - final_cost
-        cursor.execute('UPDATE users SET score = ?, title = ? WHERE telegram_id = ?', (new_score, item['title_name'], user_id))
-        conn.commit(); conn.close()
-        await query.edit_message_text(f"🎉 تگ ویژه « {item['title_name']} » فعال شد!")
-
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if context.args:
         code = context.args[0].strip()
     else:
@@ -906,22 +1494,29 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
         return
         
-    conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-    cdata = cursor.execute('SELECT * FROM redeem_codes WHERE code = ?', (code,)).fetchone()
+    cdata = execute_read_one('SELECT * FROM redeem_codes WHERE code = %s', (code,))
     if not cdata or cdata['current_uses'] >= cdata['max_uses']:
-        await update.message.reply_text("❌ کد معتبر نیست یا منقضی شده."); conn.close(); return
-    hist = cursor.execute('SELECT 1 FROM redeem_history WHERE telegram_id = ? AND code = ?', (user_id, code)).fetchone()
-    if hist: await update.message.reply_text("❌ شما قبلاً این کد را استفاده کرده‌اید."); conn.close(); return
+        await update.message.reply_text("❌ کد معتبر نیست یا منقضی شده."); return
+        
+    hist = execute_read_one('SELECT 1 FROM redeem_history WHERE telegram_id = %s AND code = %s', (user_id, code))
+    if hist: 
+        await update.message.reply_text("❌ شما قبلاً این کد را استفاده کرده‌اید."); return
     
+    user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
+    unlocked_titles = json.loads(user_data['unlocked_titles'] if user_data['unlocked_titles'] else '[]')
+    
+    if cdata['title_name'] not in unlocked_titles:
+        unlocked_titles.append(cdata['title_name'])
+        
     expire_time = (datetime.now() + timedelta(hours=cdata['duration_hours'])).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute('INSERT INTO redeem_history (telegram_id, code, used_at) VALUES (?, ?, ?)', (user_id, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    cursor.execute('UPDATE redeem_codes SET current_uses = current_uses + 1 WHERE code = ?', (code,))
-    cursor.execute('UPDATE users SET title = ?, title_expire = ? WHERE telegram_id = ?', (cdata['title_name'], expire_time, user_id))
-    conn.commit(); conn.close()
-    await update.message.reply_text(f"🎉 کد هدیه فعال شد و لقب موقت **{cdata['title_name']}** اعطا گردید.")
+    execute_write('INSERT INTO redeem_history (telegram_id, code, used_at) VALUES (%s, %s, %s)', (user_id, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    execute_write('UPDATE redeem_codes SET current_uses = current_uses + 1 WHERE code = %s', (code,))
+    execute_write('UPDATE users SET title = %s, title_expire = %s, unlocked_titles = %s WHERE telegram_id = %s', (cdata['title_name'], expire_time, json.dumps(unlocked_titles), user_id))
+    
+    await update.message.reply_text(f"🎉 کد هدیه فعال شد و لقب موقت **{cdata['title_name']}** به ویترین شما اضافه و فعال گردید.")
 
 # ==========================================
-# بخش کنترل پنل ادمین و دکمه‌های شیشه‌ای رویدادها
+# ADMINISTRATIVE HEADQUARTERS ROOM CONTROL
 # ==========================================
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_user_admin(update.effective_user.id): return
@@ -965,7 +1560,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ev_id = int(data.split("_")[3])
         if ev_id == 2:
             ADMIN_STATES[user_id] = f"EV_GET_DICE_{ev_id}"
-            await query.edit_message_text("🎯 شانس کدام تاس را می‌خواهی زیاد کنی？ (عدد ۱ تا ۶ را به صورت متنی بفرست):")
+            await query.edit_message_text("🎯 شانس کدام تاس را می‌خواهی زیاد کنی? (عدد ۱ تا ۶ را به صورت متنی بفرست):")
         elif ev_id == 15:
             ADMIN_STATES[user_id] = f"EV_GET_DISCOUNT_{ev_id}"
             await query.edit_message_text("💰 درصد تخفیف شاپ را به عدد وارد کن (مثلاً 50):")
@@ -982,7 +1577,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         param = parts[4]
         
         if choice == "no":
-            await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
+            await finalize_and_broadcast_event(query, context, ev_id, hours, param, "none", "")
             await query.edit_message_text("✅ ایونت با موفقیت فعال و فرستاده شد.")
         else:
             kb = [[InlineKeyboardButton("امتیاز (XP) 💰", callback_data=f"evtype_score_{ev_id}_{hours}_{param}"),
@@ -1005,12 +1600,8 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_reset_all_events":
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM active_event")
-        cursor.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL")
-        conn.commit()
-        conn.close()
+        execute_write("DELETE FROM active_event")
+        execute_write("UPDATE users SET title = 'بدون لقب', title_expire = NULL")
         await query.edit_message_text("🔄 **ریست با موفقیت انجام شد!**\n\nتمام ایونت‌های فعال به پایان رسیدند و تگ/لقب همه کاربران غیرفعال شد. آمار امتیازات، برد و باخت‌ها و رنک گلادیاتورها کاملاً محفوظ مانده است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
         return
 
@@ -1027,8 +1618,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text("🛠 **اتاق فرمان مدیریت پویای ربات:**", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data == "admin_users":
-        conn = sqlite3.connect(DB_FILE); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-        users = cursor.execute('SELECT username, score, rank FROM users ORDER BY score DESC LIMIT 15').fetchall(); conn.close()
+        users = execute_read_all('SELECT username, score, rank FROM users ORDER BY score DESC LIMIT 15')
         txt = "📊 **آمار کاربران برتر:**\n\n"
         for idx, u in enumerate(users): txt += f"{idx+1}. 👤 @{u['username']} | ⭐ {u['score']} XP | {u['rank']}\n"
         await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
@@ -1063,17 +1653,17 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_logs_input(update: Update, user_id, text):
     try: target_id = int(text)
     except ValueError: return
-    conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
-    logs = cursor.execute('SELECT game_type, count FROM score_logs WHERE telegram_id = ?', (target_id,)).fetchall(); conn.close()
-    if not logs: await update.message.reply_text("📊 لاگی یافت نشد."); return
+    logs = execute_read_all('SELECT game_type, count FROM score_logs WHERE telegram_id = %s', (target_id,))
+    if not logs: 
+        await update.message.reply_text("📊 لاگی یافت نشد."); return
     report = f"📊 **گزارش آیدی `{target_id}`:**\n\n"
-    for game_type, count in logs:
-        gname = "🎲 تاس انفرادی" if game_type == "solo_roll" else "⚔️ نبرد دوئل"
-        report += f"🔹 تعداد بازی در بخش {gname}: `{count}` بار\n"
+    for row in logs:
+        gname = "🎲 تاس انفرادی" if row['game_type'] == "solo_roll" else "⚔️ نبرد دوئل"
+        report += f"🔹 تعداد بازی در بخش {gname}: `{row['count']}` بار\n"
     await update.message.reply_text(report, parse_mode="Markdown")
 
 # ==========================================
-# تابع اصلی اجرا کننده (Main)
+# ASYNCHRONOUS POLLING CORE LIFECYCLE
 # ==========================================
 def main():
     if BOT_TOKEN == "YOUR_DEFAULT_TOKEN_IF_NOT_SET": return
@@ -1083,13 +1673,14 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("dice", dice_command))
     application.add_handler(CommandHandler("duel", duel_command))
+    application.add_handler(CommandHandler("offline_duel", offline_duel_command))
     application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler("top", top_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("shop", shop_command))
     application.add_handler(CommandHandler("redeem", redeem_command))
 
-    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|user_check_event)"))
+    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|user_check_event|wardrobe_)"))
     application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^(admin_|setcat_|ev_|evrew_|evtype_)"))
     application.add_handler(CallbackQueryHandler(shop_callback, pattern="^(shopmain_|shopbuy_)"))
     
@@ -1098,7 +1689,6 @@ def main():
             uid = update.effective_user.id
             txt = update.message.text.strip()
             
-            # ثبت‌نام خودکار و بی‌صدا برای هر کاربری که در گروه‌ها چت می‌کند یا دوئل می‌زند
             p_username = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
             get_or_create_user(uid, p_username)
             
@@ -1107,7 +1697,6 @@ def main():
                 await handle_admin_logs_input(update, uid, txt)
                 return
                 
-            # بررسی مستقیم دکمه‌های منوی اصلی برای جلوگیری از تداخل فیلترها
             if txt in ["🎲 پرتاب تاس", "👤 پروفایل من", "🏆 تالار افتخارات", "🏪 بازارچه لقب", "ℹ️ راهنمای کلوب"]:
                 await monitor_messages_and_inputs(update, context)
                 return
