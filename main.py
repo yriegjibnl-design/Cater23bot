@@ -1485,14 +1485,14 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Command /redeem triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
-        if context.args:
-        code = context.args[0].strip().lower()
-   else:
-        code = update.message.text.replace("/redeem ", "").replace("/redeem", "").strip().lower()
+    if context.args:
+    code = context.args[0].strip().lower()
+else:
+    code = update.message.text.replace("/redeem ", "").replace("/redeem", "").strip().lower()
 
-        if not code:
-            await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
-            return
+    if not code:
+        await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
+        return
         
     cdata = execute_read_one('SELECT * FROM redeem_codes WHERE code = %s', (code,))
     if not cdata or cdata['current_uses'] >= cdata['max_uses']:
