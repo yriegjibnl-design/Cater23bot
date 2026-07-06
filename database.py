@@ -173,31 +173,27 @@ def migrate_old_sqlite_data(pg_cursor, pg_conn):
         except Exception as e:
             print(f"⚠️ خطایی حین مهاجرت دیتا رخ داد: {e}")
 
-# ==========================================
-# سیستم بک‌گراند جابِ چک کردن انقضای لقب‌ها راس ثانیه (Lazy Method کاملاً بهینه)
-# ==========================================
 def check_and_remove_expired_titles(telegram_id):
     """این تابع قبل از هر عملیات کاربر، منقضی شدن لقبش را بررسی می‌کند"""
     conn = get_db_connection()
-    user = conn.execute("SELECT title_expire, title FROM users WHERE telegram_id = %s", (telegram_id,)).fetchone()
+    cursor = conn.cursor()
+    cursor.execute("SELECT title_expire, title FROM users WHERE telegram_id = %s", (telegram_id,))
+    user = cursor.fetchone()
     
     if user and user['title_expire']:
         try:
             expire_time = datetime.strptime(user['title_expire'], "%Y-%m-%d %H:%M:%S")
             if datetime.now() > expire_time:
-                # مهلت لقب تمام شده است!
-                conn.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL WHERE telegram_id = %s", (telegram_id,))
+                cursor.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL WHERE telegram_id = %s", (telegram_id,))
                 conn.commit()
+                cursor.close()
                 conn.close()
-                return True # لقب منقضی شد
+                return True
         except Exception:
             pass
+    cursor.close()
     conn.close()
     return False
-
-# ==========================================
-# توابع کاربردی و منطقی مدیریت کاربران (نسخه PostgreSQL)
-# ==========================================
 
 def is_user_admin(telegram_id):
     conn = get_db_connection()
@@ -209,7 +205,7 @@ def is_user_admin(telegram_id):
     return admin is not None
 
 def get_or_create_user(telegram_id, username):
-    check_and_remove_expired_titles(telegram_id) # چک کردن لقب قبل از خواندن اطلاعات اکانت
+    check_and_remove_expired_titles(telegram_id)
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -233,7 +229,8 @@ def get_or_create_user(telegram_id, username):
     conn.close()
     return user
 
-def calculate_rank(score):
+def calculate_rank(score, telegram_id=None):
+    """محاسبه دقیق رتبه‌بندی هاردکور با سقف ۱۴,۰۰۰ کاپ و تاپ ۱۰ پادشاهی ابدی"""
     if score < 0: return "💀 کفتار کلوب"
     elif score < 200: return "🥉 Bronze I"
     elif score < 600: return "🥉 Bronze II"
@@ -242,8 +239,19 @@ def calculate_rank(score):
     elif score < 3500: return "🥇 Gold I"
     elif score < 5500: return "🥇 Gold II"
     elif score < 8000: return "🔮 Diamond"
-    elif score < 12000: return "👑 Gladiator"
-    else: return "👑 Immortal Legend"
+    elif score < 10000: return "👑 Gladiator"
+    elif score < 14000: return "👑 Legend"
+    else:
+        if telegram_id:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT telegram_id FROM users ORDER BY score DESC, telegram_id ASC LIMIT 10")
+            top_10 = [row['telegram_id'] for row in cursor.fetchall()]
+            cursor.close()
+            conn.close()
+            if telegram_id in top_10:
+                return "👑 [GOD OF DICE] Infinity"
+        return "👑 Legend"
 
 def update_stats(telegram_id, score_change, mode='win'):
     conn = get_db_connection()
@@ -256,8 +264,15 @@ def update_stats(telegram_id, score_change, mode='win'):
         conn.close()
         return None
 
+    # 🛑 بررسی قانون هاردکور لیگ پادشاهان (کاپ بالای ۱۰,۰۰۰)
+    if user['score'] >= 10000:
+        if mode == 'win':
+            score_change = 80
+        elif mode == 'loss':
+            score_change = -100
+
     new_score = max(0, user['score'] + score_change)
-    new_rank = calculate_rank(new_score)
+    new_rank = calculate_rank(new_score, telegram_id)
     rank_changed = (new_rank != user['rank']) 
     
     w, l, d = user['wins'], user['losses'], user['draws']
@@ -280,7 +295,7 @@ def update_stats(telegram_id, score_change, mode='win'):
 def get_top_players(limit=10):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users ORDER BY score DESC LIMIT %s", (limit,))
+    cursor.execute("SELECT * FROM users ORDER BY score DESC, telegram_id ASC LIMIT %s", (limit,))
     players = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -305,7 +320,7 @@ def buy_title(telegram_id, title_name):
         return {"status": "low_score", "message": "امتیاز شما کافی نیست."}
         
     new_score = user['score'] - item['cost']
-    new_rank = calculate_rank(new_score)
+    new_rank = calculate_rank(new_score, telegram_id)
     
     cursor.execute("""
         UPDATE users 
@@ -333,155 +348,5 @@ def get_shop_items():
     cursor.execute("SELECT * FROM shop")
     items = cursor.fetchall()
     cursor.close()
-    conn.close()
-    return items
-    # افزودن ادمین اولیه پروژه‌ در صورت عدم وجود
-    cursor.execute("INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)", (initial_admin_id,))
-    
-    # پر کردن شاپ اولیه به صورت پیش‌فرض (در صورت خالی بودن جدول)
-    shop_check = cursor.execute("SELECT COUNT(*) FROM shop").fetchone()[0]
-    if shop_check == 0:
-        default_items = [
-            ('🥈 نوچه کلوب', 200, 'normal'),
-            ('🥈 تاس باز', 400, 'normal'),
-            ('🔮 شکارچی سایه', 1500, 'epic'),
-            ('🔮 مبارز ابدی', 2500, 'epic'),
-            ('👑 شاهزاده نبرد', 6000, 'legendary'),
-            ('👑 گلادیاتور اعظم', 9000, 'legendary')
-        ]
-        cursor.executemany("INSERT INTO shop (title_name, cost, category) VALUES (?, ?, ?)", default_items)
-
-    conn.commit()
-    conn.close()
-
-# ==========================================
-# توابع کاربردی و منطقی مدیریت کاربران
-# ==========================================
-
-def is_user_admin(telegram_id):
-    """بررسی سطح دسترسی ادمین"""
-    conn = get_db_connection()
-    admin = conn.execute("SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    conn.close()
-    return admin is not None
-
-def get_or_create_user(telegram_id, username):
-    """احراز هویت یا ثبت نام کاربر جدید در دیتابیس نبرد"""
-    conn = get_db_connection()
-    user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if not user:
-        # اصلاح رنک اولیه در هنگام ثبت نام به برنز ۱ بجای مقدار پیش‌فرض قدیمی
-        conn.execute("""
-            INSERT INTO users (telegram_id, username, score, rank, created_at, last_seen)
-            VALUES (?, ?, 0, '🥉 Bronze I', ?, ?)
-        """, (telegram_id, username, now_str, now_str))
-        conn.commit()
-        user = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    else:
-        # آپدیت آخرین زمان بازدید و یوزرنیم (در صورت تغییر در تلگرام)
-        conn.execute("UPDATE users SET username = ?, last_seen = ? WHERE telegram_id = ?", (username, now_str, telegram_id))
-        conn.commit()
-        
-    conn.close()
-    return user
-
-def calculate_rank(score):
-    """محاسبه دقیق رتبه‌بندی کاربران بر اساس سقف امتیازات کلوب"""
-    if score < 0: return "💀 کفتار کلوب"
-    elif score < 200: return "🥉 Bronze I"        # اصلاح شد: امتیاز زیر ۲۰۰ برنز ۱ هست نه گلادیاتور
-    elif score < 600: return "🥉 Bronze II"
-    elif score < 1200: return "🥈 Silver I"
-    elif score < 2000: return "🥈 Silver II"
-    elif score < 3500: return "🥇 Gold I"
-    elif score < 5500: return "🥇 Gold II"
-    elif score < 8000: return "🔮 Diamond"
-    elif score < 12000: return "👑 Gladiator"       # اصلاح شد: انتقال جایگاه منطقی گلادیاتور به سطح بالا
-    else: return "👑 Immortal Legend"
-
-def update_stats(telegram_id, score_change, mode='win'):
-    """به‌روزرسانی همزمان امتیازات، برد و باخت‌ها و لول‌آپ خودکار رنک"""
-    conn = get_db_connection()
-    user = conn.execute("SELECT score, rank, wins, losses, draws, total_games FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    
-    if not user:
-        conn.close()
-        return None
-
-    new_score = max(0, user['score'] + score_change) # جلوگیری از منفی شدن امتیاز کل زیر صفر
-    new_rank = calculate_rank(new_score)
-    
-    # اصلاح باگ منطقی: مقایسه رنک جدید با رنک قبلی (نه با امتیاز قبلی)
-    rank_changed = (new_rank != user['rank']) 
-    
-    w, l, d = user['wins'], user['losses'], user['draws']
-    if mode == 'win': w += 1
-    elif mode == 'loss': l += 1
-    elif mode == 'draw': d += 1
-    
-    total = w + l + d
-    
-    conn.execute("""
-        UPDATE users 
-        SET score = ?, rank = ?, wins = ?, losses = ?, draws = ?, total_games = ?
-        WHERE telegram_id = ?
-    """, (new_score, new_rank, w, l, d, total, telegram_id))
-    
-    conn.commit()
-    conn.close()
-    
-    return {"new_score": new_score, "new_rank": new_rank, "rank_changed": rank_changed}
-
-def get_top_players(limit=10):
-    """دریافت لیست مشاهیر و ۱۰ گلادیاتور برتر کلوب"""
-    conn = get_db_connection()
-    players = conn.execute("SELECT * FROM users ORDER BY score DESC LIMIT ?", (limit,)).fetchall()
-    conn.close()
-    return players 
-
-# ==========================================
-# توابع جدید و حیاتی افزوده شده برای سیستم لقب‌ها (بدون حذف توابع قبلی)
-# ==========================================
-
-def buy_title(telegram_id, title_name):
-    """خرید لقب از بازارچه و کسر امتیاز کاربر"""
-    conn = get_db_connection()
-    user = conn.execute("SELECT score FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    item = conn.execute("SELECT cost FROM shop WHERE title_name = ?", (title_name,)).fetchone()
-    
-    if not user or not item:
-        conn.close()
-        return {"status": "error", "message": "کاربر یا آیتم یافت نشد."}
-        
-    if user['score'] < item['cost']:
-        conn.close()
-        return {"status": "low_score", "message": "امتیاز شما کافی نیست."}
-        
-    new_score = user['score'] - item['cost']
-    new_rank = calculate_rank(new_score)
-    
-    conn.execute("""
-        UPDATE users 
-        SET score = ?, rank = ?, title = ?, title_expire = NULL 
-        WHERE telegram_id = ?
-    """, (new_score, new_rank, title_name, telegram_id))
-    
-    conn.commit()
-    conn.close()
-    return {"status": "success", "new_score": new_score, "title": title_name}
-
-def set_user_title_admin(telegram_id, title_name):
-    """تنظیم دستی لقب کاربر توسط ادمین"""
-    conn = get_db_connection()
-    conn.execute("UPDATE users SET title = ?, title_expire = NULL WHERE telegram_id = ?", (title_name, telegram_id))
-    conn.commit()
-    conn.close()
-    return True
-
-def get_shop_items():
-    """دریافت لیست تمام آیتم‌های موجود در شاپ"""
-    conn = get_db_connection()
-    items = conn.execute("SELECT * FROM shop").fetchall()
     conn.close()
     return items
