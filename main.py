@@ -21,7 +21,7 @@ except ImportError:
 # ==========================================
 # MAIN CORE BOT CONFIGURATION
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFGeDmC1lnY_LoFaah7zTAX7NjriIb2-Tc")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFqv00G_eAFkeP0x-UhrENKByEb5U5_MnM")
 INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")  # If set, automatically connects to PostgreSQL
 
