@@ -17,6 +17,7 @@ from database import init_db, is_user_admin, get_or_create_user, update_stats, g
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFqv00G_eAFkeP0x-UhrENKByEb5U5_MnM")
 INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
+DB_FILE = "database.db"
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
@@ -499,7 +500,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer("❌ موجودی شما برای تایید این شرط کافی نیست!", show_alert=True); conn.close(); return
             
             now = datetime.now().timestamp()
-            if p1_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1_id]:
+            if p1_id in DUEL_COOLDOWNS parks and now < DUEL_COOLDOWNS[p1_id]:
                 await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
             if p2_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p2_id]:
                 await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
@@ -981,7 +982,6 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         param = parts[4]
         
         if choice == "no":
-            # تغییر یافتن متغیر ارسالی از query به update جهت رفع باگ کرش دکمه شیشه‌ای ادمین
             await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             await query.edit_message_text("✅ ایونت با موفقیت فعال و فرستاده شد.")
         else:
