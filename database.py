@@ -1200,3 +1200,23 @@ def get_infinity_ranks() -> List[Dict[str, Any]]:
             except Exception as error:
                 logger.error(f"Failed to load cached division rankings matrix indices: {error}")
     return elite_dataset
+import random
+import string
+
+def smart_add_redeem_code(code: str, title_name: str, max_uses: int, duration_hours: int) -> str:
+    """
+    اگر ورودی کلمه 'رندم' باشد، یک کد تصادفی تولید کرده و ذخیره می‌کند.
+    در غیر این صورت همان کد دستی را ذخیره می‌کند.
+    """
+    final_code = code.strip()
+    if final_code == "رندم" or final_code.lower() == "random":
+        # تولید یک کد رندم ۶ رقمی ترکیبی از حروف بزرگ و اعداد
+        random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        final_code = f"RDM-{random_suffix}"
+    
+    # صدا زدن تابع اصلی دیتابیس برای ذخیره سازی
+    success = add_redeem_code(final_code, title_name, max_uses, duration_hours)
+    
+    if success:
+        return final_code
+    return ""
