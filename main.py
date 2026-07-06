@@ -675,7 +675,7 @@ async def offline_duel_command(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Command /offline_duel triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-        perks_raw = user_data.get('unlocked_perks') if user_data else None
+    perks_raw = user_data.get('unlocked_perks') if user_data else None
     perks = json.loads(perks_raw) if perks_raw else []
 
 
