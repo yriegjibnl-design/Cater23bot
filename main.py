@@ -539,8 +539,9 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dice_msg = await context.bot.send_dice(chat_id=update.effective_chat.id)
     dice_value = dice_msg.dice.value
     
-    perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
-    if dice_value == 1 and "perk_luckydice" in perks:
+        perks_raw = user_data.get('unlocked_perks') if user_data else None
+    perks = json.loads(perks_raw) if perks_raw else []
+        if dice_value == 1 and "perk_luckydice" in perks:
         if user_data['score'] < 10000:
             await asyncio.sleep(2)
             await update.message.reply_markdown("🎲 **آیتم تاس شانس فعال شد!** عدد ۱ آمد، مجدداً یک تاس دیگر به عنوان شانس مجدد پرتاب می‌شود...")
@@ -617,7 +618,9 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     p1_data = get_or_create_user(p1.id, p1.username if p1.username else p1.first_name)
     p2_data = get_or_create_user(p2.id, p2.username if p2.username else p2.first_name)
-    perks = json.loads(p1_data['unlocked_perks'] if p1_data['unlocked_perks'] else '[]')
+        p1_perks_raw = p1_data.get('unlocked_perks') if p1_data else None
+    perks = json.loads(p1_perks_raw) if p1_perks_raw else []
+
 
     rounds = 3
     wager = 0
@@ -672,7 +675,9 @@ async def offline_duel_command(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Command /offline_duel triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-    perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
+        perks_raw = user_data.get('unlocked_perks') if user_data else None
+    perks = json.loads(perks_raw) if perks_raw else []
+
 
     rounds = 3
     wager = 0
