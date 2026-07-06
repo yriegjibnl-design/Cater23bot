@@ -1487,8 +1487,8 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if context.args:
         code = context.args[0].strip().lower()
-else:
-    code = update.message.text.replace("/redeem ", "").replace("/redeem", "").strip().lower()
+    else:
+        code = update.message.text.replace("/redeem ", "").replace("/redeem", "").strip().lower()
 
     if not code:
         await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
