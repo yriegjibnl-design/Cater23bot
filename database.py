@@ -6,10 +6,10 @@ from datetime import datetime
 
 # 🔗 اتصال خودکار به دیتابیس PostgreSQL ریل‌وی از طریق متغیر محیطی
 DATABASE_URL = os.getenv("DATABASE_URL")
-OLD_DB_FILE = "game_database.db"
+OLD_DB_FILE = "database.db"  # نام فایل قدیمی اس‌کیولایت برای ترانسفر دیتا
 
 def get_db_connection():
-    """برقراری ارتباط با دیتابیس PostgreSQL ریل‌وی"""
+    """برقراری ارتباط با دیتابیس PostgreSQL ریل‌وی به همراه کرسر دیکشنری"""
     return psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
 
 def init_db(initial_admin_id=7430881772):
@@ -107,41 +107,6 @@ def init_db(initial_admin_id=7430881772):
         );
         """)
 
-        # ۹. جدول ویترین لقب‌های آزاد شده کاربر
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_unlocked_titles (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT,
-            title_name VARCHAR(255),
-            unlocked_at VARCHAR(50)
-        );
-        """)
-
-        # ۱۰. جدول اینونتوری آیتم‌های ویژه شاپ
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_inventory (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT,
-            item_name VARCHAR(255),
-            item_type VARCHAR(50),
-            quantity INT DEFAULT 1,
-            purchased_at VARCHAR(50)
-        );
-        """)
-
-        # ۱۱. جدول دوعل‌های غیابی
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS offline_challenges (
-            challenge_id SERIAL PRIMARY KEY,
-            challenger_id BIGINT,
-            defender_id BIGINT,
-            challenger_score INT,
-            defender_score INT DEFAULT NULL,
-            status VARCHAR(50) DEFAULT 'pending',
-            created_at VARCHAR(50)
-        );
-        """)
-
         # افزودن ادمین اولیه پروژه‌ در صورت عدم وجود
         cursor.execute("INSERT INTO admins (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING;", (initial_admin_id,))
         
@@ -161,7 +126,7 @@ def init_db(initial_admin_id=7430881772):
                 cursor.execute("INSERT INTO shop (title_name, cost, category) VALUES (%s, %s, %s) ON CONFLICT (title_name) DO NOTHING;", item)
 
         conn.commit()
-        print("✅ جدول‌های PostgreSQL با موفقیت ست‌آپ شدند!")
+        print("✅ جدول‌های PostgreSQL با موفقیت ست‌آپ و بهینه‌سازی شدند!")
         
         # 🔄 انتقال اتوماتیک کل دیتای لوکل قدیمی به سرور جدید ریل‌وی
         migrate_old_sqlite_data(cursor, conn)
@@ -193,7 +158,7 @@ def migrate_old_sqlite_data(pg_cursor, pg_conn):
             for admin in lite_cursor.fetchall():
                 pg_cursor.execute("INSERT INTO admins (telegram_id) VALUES (%s) ON CONFLICT (telegram_id) DO NOTHING;", admin)
 
-            # انتقال کدهای هدیه (در صورت نیاز)
+            # انتقال کدهای هدیه
             lite_cursor.execute("SELECT code, title_name, max_uses, current_uses, duration_hours FROM redeem_codes")
             for code in lite_cursor.fetchall():
                 pg_cursor.execute("INSERT INTO redeem_codes (code, title_name, max_uses, current_uses, duration_hours) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (code) DO NOTHING;", code)
@@ -208,9 +173,6 @@ def migrate_old_sqlite_data(pg_cursor, pg_conn):
         except Exception as e:
             print(f"⚠️ خطایی حین مهاجرت دیتا رخ داد: {e}")
 
-# ==========================================
-# سیستم بک‌گراند جابِ چک کردن انقضای لقب‌ها راس ثانیه (Lazy Method کاملاً بهینه)
-# ==========================================
 def check_and_remove_expired_titles(telegram_id):
     """این تابع قبل از هر عملیات کاربر، منقضی شدن لقبش را بررسی می‌کند"""
     try:
@@ -223,12 +185,11 @@ def check_and_remove_expired_titles(telegram_id):
             try:
                 expire_time = datetime.strptime(user['title_expire'], "%Y-%m-%d %H:%M:%S")
                 if datetime.now() > expire_time:
-                    # مهلت لقب تمام شده است!
                     cursor.execute("UPDATE users SET title = 'بدون لقب', title_expire = NULL WHERE telegram_id = %s", (telegram_id,))
                     conn.commit()
                     cursor.close()
                     conn.close()
-                    return True # لقب منقضی شد
+                    return True 
             except Exception:
                 pass
         cursor.close()
@@ -238,7 +199,7 @@ def check_and_remove_expired_titles(telegram_id):
     return False
 
 # ==========================================
-# توابع کاربردی و منطقی مدیریت کاربران (نسخه PostgreSQL)
+# توابع اصلی هماهنگ‌شده با بدنه ربات (اصلاح کالبک‌ها)
 # ==========================================
 
 def is_user_admin(telegram_id):
@@ -251,7 +212,7 @@ def is_user_admin(telegram_id):
     return admin is not None
 
 def get_or_create_user(telegram_id, username):
-    check_and_remove_expired_titles(telegram_id) # چک کردن لقب قبل از خواندن اطلاعات اکانت
+    check_and_remove_expired_titles(telegram_id)
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -273,7 +234,7 @@ def get_or_create_user(telegram_id, username):
         
     cursor.close()
     conn.close()
-    return user
+    return dict(user) if user else None
 
 def calculate_rank(score):
     if score < 0: return "💀 کفتار کلوب"
@@ -322,59 +283,8 @@ def update_stats(telegram_id, score_change, mode='win'):
 def get_top_players(limit=10):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users ORDER BY score DESC LIMIT %s", (limit,))
+    cursor.execute("SELECT username, score, rank, title, telegram_id FROM users ORDER BY score DESC LIMIT %s", (limit,))
     players = cursor.fetchall()
     cursor.close()
     conn.close()
-    return players 
-
-def buy_title(telegram_id, title_name):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT score FROM users WHERE telegram_id = %s", (telegram_id,))
-    user = cursor.fetchone()
-    cursor.execute("SELECT cost FROM shop WHERE title_name = %s", (title_name,))
-    item = cursor.fetchone()
-    
-    if not user or not item:
-        cursor.close()
-        conn.close()
-        return {"status": "error", "message": "کاربر یا آیتم یافت نشد."}
-        
-    if user['score'] < item['cost']:
-        cursor.close()
-        conn.close()
-        return {"status": "low_score", "message": "امتیاز شما کافی نیست."}
-        
-    new_score = user['score'] - item['cost']
-    new_rank = calculate_rank(new_score)
-    
-    cursor.execute("""
-        UPDATE users 
-        SET score = %s, rank = %s, title = %s, title_expire = NULL 
-        WHERE telegram_id = %s
-    """, (new_score, new_rank, title_name, telegram_id))
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return {"status": "success", "new_score": new_score, "title": title_name}
-
-def set_user_title_admin(telegram_id, title_name):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET title = %s, title_expire = NULL WHERE telegram_id = %s", (title_name, telegram_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return True
-
-def get_shop_items():
-    """دریافت لیست تمام آیتم‌های موجود در شاپ"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM shop")
-    items = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return items
+    return [dict(p) for p in players]
