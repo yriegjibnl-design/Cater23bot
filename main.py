@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
 # وارد کردن توابع اختصاصی مدیریت دیتابیس از فایل جانبی
-from database import init_db, is_user_admin, get_or_create_user, update_stats, get_top_players, calculate_rank, DB_FILE
+from database import init_db, is_user_admin, get_or_create_user, update_stats, get_top_players, calculate_rank,
 
 # ==========================================
 # تنظیمات اصلی ربات از طریق محیط سرور
