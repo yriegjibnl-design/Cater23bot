@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 # =====================================================================
 # CONFIGURATION AND LOGGING SYSTEM
 # =====================================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAG5R8ecxbTNnl7wwfLPg12yqzjoKl6t0jg")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8894117383:AAFqv00G_eAFkeP0x-UhrENKByEb5U5_MnM")
 INITIAL_ADMIN_ID = int(os.getenv("ADMIN_ID", "7430881772"))
 DB_FILE = "club_dice.db"
 
