@@ -618,7 +618,7 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     p1_data = get_or_create_user(p1.id, p1.username if p1.username else p1.first_name)
     p2_data = get_or_create_user(p2.id, p2.username if p2.username else p2.first_name)
-        p1_perks_raw = p1_data.get('unlocked_perks') if p1_data else None
+    p1_perks_raw = p1_data.get('unlocked_perks') if p1_data else None
     perks = json.loads(p1_perks_raw) if p1_perks_raw else []
 
 
