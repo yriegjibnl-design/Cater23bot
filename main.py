@@ -1486,7 +1486,7 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Command /redeem triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     if context.args:
-    code = context.args[0].strip().lower()
+        code = context.args[0].strip().lower()
 else:
     code = update.message.text.replace("/redeem ", "").replace("/redeem", "").strip().lower()
 
