@@ -1494,7 +1494,7 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
         return
         
-    cdata = execute_read_one('SELECT * FROM redeem_codes WHERE code = %s', (code,))
+    cdata = execute_read_one('SELECT * FROM redeem_codes WHERE LOWER(code) = %s', (code,))
     if not cdata or cdata['current_uses'] >= cdata['max_uses']:
         await update.message.reply_text("❌ کد معتبر نیست یا منقضی شده."); return
         
