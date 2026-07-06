@@ -500,7 +500,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer("❌ موجودی شما برای تایید این شرط کافی نیست!", show_alert=True); conn.close(); return
             
             now = datetime.now().timestamp()
-            if p1_id in DUEL_COOLDOWNS parks and now < DUEL_COOLDOWNS[p1_id]:
+            if p1_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p1_id]:
                 await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
             if p2_id in DUEL_COOLDOWNS and now < DUEL_COOLDOWNS[p2_id]:
                 await query.answer("❌ محدودیت زمانی (کول‌داون) شما یا حریفتان هنوز تمام نشده است!", show_alert=True); conn.close(); return
