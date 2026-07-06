@@ -964,6 +964,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p2_id = user_id
             wager = int(duel['wager'])
             rounds = int(duel['rounds'])
+            p2_username = query.from_user.username if query.from_user.username else query.from_user.first_name
+            get_or_create_user(p2_id, p2_username)
+        
             
             p1_chk = execute_read_one("SELECT score, username FROM users WHERE telegram_id = %s", (p1_id,))
             p2_chk = execute_read_one("SELECT score, username FROM users WHERE telegram_id = %s", (p2_id,))
