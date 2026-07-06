@@ -1648,7 +1648,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✨ نام تگ اختصاصی جدید را بفرستید:")
     elif data == "admin_make_redeem":
         ADMIN_STATES[user_id] = "WAITING_FOR_REDEEM_CODE"
-        await query.edit_message_text("🔑 لطفا کد کلمه‌ای ردیم کد مدنظرتان را ارسال کنید:")
+        await query.edit_message_text("🔑 لطفا کد کلمه‌ای ردیم کد مدنظرتان را ارسال کنید یا عبارت `رندم` را بفرستید:")
     elif data == "admin_check_logs":
         ADMIN_STATES[user_id] = "WAITING_FOR_LOGS_ID"
         await query.edit_message_text("📊 لطفا آیدی عددی کاربر مورد نظر را بفرستید:")
