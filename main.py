@@ -541,8 +541,8 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     perks_raw = user_data.get('unlocked_perks') if user_data else None
     perks = json.loads(perks_raw) if perks_raw else []
-        if dice_value == 1 and "perk_luckydice" in perks:
-        if user_data['score'] < 10000:
+    if dice_value == 1 and "perk_luckydice" in perks:
+    if user_data['score'] < 10000:
             await asyncio.sleep(2)
             await update.message.reply_markdown("🎲 **آیتم تاس شانس فعال شد!** عدد ۱ آمد، مجدداً یک تاس دیگر به عنوان شانس مجدد پرتاب می‌شود...")
             dice_msg = await context.bot.send_dice(chat_id=update.effective_chat.id)
