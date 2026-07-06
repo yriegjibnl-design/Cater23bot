@@ -41,7 +41,6 @@ def get_db_connection():
     is specified and available, otherwise seamlessly falls back to SQLite.
     """
     if DATABASE_URL and POSTGRES_AVAILABLE:
-        # Standardize connection string format for compatibility
         url = DATABASE_URL
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
@@ -121,7 +120,6 @@ def init_db_schema():
     cursor = conn.cursor()
     
     if is_pg:
-        # PostgreSQL Schema Design
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id BIGINT PRIMARY KEY,
@@ -196,7 +194,6 @@ def init_db_schema():
             created_at TEXT
         )""")
     else:
-        # SQLite Schema Design
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -356,9 +353,8 @@ def get_or_create_user(telegram_id, username):
     else:
         execute_write("UPDATE users SET last_seen = %s, username = %s WHERE telegram_id = %s", (now_str, username, telegram_id))
     
-    # Dynamic recalculation for the exclusive Infinity [GOD OF DICE] Rank shifting rule
     top_10 = get_top_10_ids()
-    if int(telegram_id) in top_10:
+    if user and int(telegram_id) in top_10:
         user['title'] = "[GOD OF DICE]"
     return user
 
@@ -369,7 +365,6 @@ def update_stats(telegram_id, score_change, match_result):
     
     current_score = user['score']
     
-    # League 10,000+ XP absolute score rules scaling overriding
     if current_score >= 10000:
         if match_result == 'win':
             score_change = 80
@@ -470,10 +465,10 @@ def get_current_active_event():
 # COMMAND HANDLERS
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /start triggered by user {update.effective_user.id}")
     user = update.effective_user
     get_or_create_user(user.id, user.username if user.username else user.first_name)
     
-    # Process Offline Duel deep link parameter if available
     if context.args and context.args[0].startswith("oduel_"):
         token = context.args[0].replace("oduel_", "").strip()
         await process_offline_duel_link(update, context, token)
@@ -495,6 +490,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✨ جهت بررسی رویدادها و چالش‌های زنده کلوب دکمه زیر را لمس کنید:", reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /help triggered by user {update.effective_user.id}")
     help_text = (
         "⚔️ 🔴 **لیست فرمان‌های نبرد کلوب تاس (آپدیت بزرگ)** 🔴 ⚔️\n\n"
         "🎲 `🎲 پرتاب تاس` — پرتاب تاس انفرادی (دارای شانس حمله بحرانی متوالی)\n"
@@ -531,6 +527,7 @@ def register_and_check_critical(telegram_id, current_dice):
     return is_critical
 
 async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /dice triggered by user {update.effective_user.id}")
     if not await check_spam_and_mute(update, "dice"): return
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
@@ -542,7 +539,6 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dice_msg = await context.bot.send_dice(chat_id=update.effective_chat.id)
     dice_value = dice_msg.dice.value
     
-    # Lucky Dice Item Perk Logic checking
     perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
     if dice_value == 1 and "perk_luckydice" in perks:
         if user_data['score'] < 10000:
@@ -603,6 +599,7 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # GROUP & WAGER DUELS SYSTEM
 # ==========================================
 async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /duel triggered by user {update.effective_user.id}")
     if not await check_spam_and_mute(update, "duel"): return
     p1 = update.effective_user
     if not update.message.reply_to_message:
@@ -669,9 +666,10 @@ async def duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==========================================
-# OFFLINE DUEL INHERITANCE SYSTEM (قابلیت جدید)
+# OFFLINE DUEL INHERITANCE SYSTEM
 # ==========================================
 async def offline_duel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /offline_duel triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
     perks = json.loads(user_data['unlocked_perks'] if user_data['unlocked_perks'] else '[]')
@@ -700,7 +698,6 @@ async def offline_duel_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ امتیاز کافی برای شرط بندی ندارید! موجودی: {user_data['score']} XP")
         return
 
-    # Generate Secure Unique Link token ID
     token = "".join(random.choices(string.ascii_letters + string.digits, k=10))
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -758,7 +755,7 @@ async def process_offline_duel_link(update: Update, context: ContextTypes.DEFAUL
     )
 
 # ==========================================
-# SHOWCASE / WARDROBE INTERFACE (قابلیت جدید)
+# SHOWCASE / WARDROBE INTERFACE
 # ==========================================
 async def wardrobe_interface(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id=None):
     query = update.callback_query
@@ -770,7 +767,6 @@ async def wardrobe_interface(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     keyboard = []
     
-    # Prepend basic/default title option
     if user_data['title'] == 'بدون لقب':
         keyboard.append([InlineKeyboardButton("✅ بدون لقب (فعال)", callback_data="wardrobe_set_none")])
     else:
@@ -798,6 +794,7 @@ async def wardrobe_interface(update: Update, context: ContextTypes.DEFAULT_TYPE,
 # LEADERS AND PROFILE CONTROLLERS
 # ==========================================
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /top triggered by user {update.effective_user.id}")
     top_players = get_top_players()
     if not top_players:
         if update.message: 
@@ -818,6 +815,7 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return leaderboard_text, keyboard
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /profile or /rank triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
     win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
@@ -841,6 +839,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return profile_text
 
 async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /shop triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
     keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data="shopmain_cat_normal")],
@@ -853,6 +852,7 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACKS INTERCEPTOR ENGINE
 # ==========================================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Callback query received from user {update.effective_user.id}")
     query = update.callback_query
     data = query.data.split("_")
     chat_id = query.message.chat_id
@@ -897,11 +897,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(text, parse_mode="Markdown")
         return
 
-    # Handle Wardrobe Custom Actions
     if query.data == "wardrobe_view" or query.data == "wardrobe_back_profile":
         if query.data == "wardrobe_back_profile":
             await query.answer()
-            # Redirect smoothly back to text profile format layout
             user = get_or_create_user(user_id, query.from_user.username if query.from_user.username else query.from_user.first_name)
             win_rate = round((user['wins'] / user['total_games']) * 100, 1) if user['total_games'] > 0 else 0
             top_10 = get_top_10_ids()
@@ -941,7 +939,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("✨ این لقب در حال حاضر فعال است.", show_alert=True)
         return
 
-    # Handle Offline Duels Process
     if data[0] == "oduel":
         action = data[1]
         token = data[2]
@@ -953,6 +950,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "reject":
             execute_write("UPDATE offline_duels SET status = 'rejected' WHERE duel_id = %s", (token,))
+            await query.answer()
             await query.edit_message_text("🏳️ درخواست چالش دوئل غیابی رد شد.")
             return
 
@@ -973,7 +971,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer("❌ موجودی امتیاز شما کافی نیست!", show_alert=True)
                     return
 
-            # Lock the match immediately
             execute_write("UPDATE offline_duels SET status = 'accepted' WHERE duel_id = %s", (token,))
             await query.answer()
             await query.edit_message_text("⚔️ **چالش پذیرفته شد! شبیه‌سازی دوئل غیابی آغاز می‌شود...**")
@@ -983,7 +980,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             p1_total, p2_total = 0, 0
             
-            # Execute automatic randomized calculations simulating dice rolling rounds
             for _ in range(rounds):
                 p1_total += random.randint(1, 6)
                 p2_total += random.randint(1, 6)
@@ -1101,8 +1097,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data[0] == "gduel":
         action = data[1]
         if action == "no":
+            await query.answer()
             if user_id != int(data[2]): return
-            await query.answer(); await query.edit_message_text(f"🏳️ دوئل توسط حریف لغو شد.")
+            await query.edit_message_text(f"🏳️ دوئل توسط حریف لغو شد.")
             return
         if action == "yes":
             p1_id, p2_id, rounds = int(data[2]), int(data[3]), int(data[4])
@@ -1180,13 +1177,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             DUEL_COOLDOWNS[p1_id] = finish_time; DUEL_COOLDOWNS[p2_id] = finish_time
             await context.bot.send_message(chat_id=chat_id, text=result_text)
 
-    if data[0] == "admin": await admin_buttons(update, context)
-    if data[0] == "shop": await shop_callback(update, context)
-
 # ==========================================
 # ADVANCED STORES CALLBACK HANDLERS
 # ==========================================
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Shop callback query received from user {update.effective_user.id}")
     query = update.callback_query; user_id = query.from_user.id; data = query.data
     await query.answer()
     
@@ -1232,7 +1227,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         new_score = user['score'] - final_cost
         
-        # Save inventory according to item types (perks vs structural vanity titles)
         unlocked_titles = json.loads(user['unlocked_titles'] if user['unlocked_titles'] else '[]')
         unlocked_perks = json.loads(user['unlocked_perks'] if user['unlocked_perks'] else '[]')
         
@@ -1484,6 +1478,7 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
 # EXPANSIVE PROMO CODE REDEMPTION SYSTEMS
 # ==========================================
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /redeem triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
     if context.args:
         code = context.args[0].strip()
@@ -1519,6 +1514,7 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ADMINISTRATIVE HEADQUARTERS ROOM CONTROL
 # ==========================================
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Command /admin triggered by user {update.effective_user.id}")
     if not is_user_admin(update.effective_user.id): return
     keyboard = [
         [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
@@ -1533,7 +1529,9 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛠 **اتاق فرمان مدیریت پیشرفته ربات:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Admin callback control triggered by user {update.effective_user.id}")
     query = update.callback_query; user_id = query.from_user.id; data = query.data
+    await query.answer()
     
     if data.startswith("setcat_"):
         parts = data.split("_"); cat_type = parts[1]; title_name = parts[2]
@@ -1577,7 +1575,7 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         param = parts[4]
         
         if choice == "no":
-            await finalize_and_broadcast_event(query, context, ev_id, hours, param, "none", "")
+            await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             await query.edit_message_text("✅ ایونت با موفقیت فعال و فرستاده شد.")
         else:
             kb = [[InlineKeyboardButton("امتیاز (XP) 💰", callback_data=f"evtype_score_{ev_id}_{hours}_{param}"),
@@ -1648,7 +1646,6 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📊 لطفا آیدی عددی کاربر مورد نظر را بفرستید:")
     elif data == "admin_close":
         await query.edit_message_text("🔒 پنل مدیریت بسته شد.")
-    await query.answer()
 
 async def handle_admin_logs_input(update: Update, user_id, text):
     try: target_id = int(text)
@@ -1667,7 +1664,7 @@ async def handle_admin_logs_input(update: Update, user_id, text):
 # ==========================================
 def main():
     if BOT_TOKEN == "YOUR_DEFAULT_TOKEN_IF_NOT_SET": return
-    application = Application.builder().token(BOT_TOKEN).job_queue(None).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -1675,12 +1672,13 @@ def main():
     application.add_handler(CommandHandler("duel", duel_command))
     application.add_handler(CommandHandler("offline_duel", offline_duel_command))
     application.add_handler(CommandHandler("profile", profile_command))
+    application.add_handler(CommandHandler("rank", profile_command))
     application.add_handler(CommandHandler("top", top_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("shop", shop_command))
     application.add_handler(CommandHandler("redeem", redeem_command))
 
-    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|user_check_event|wardrobe_)"))
+    application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|oduel_|user_check_event|wardrobe_)"))
     application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^(admin_|setcat_|ev_|evrew_|evtype_)"))
     application.add_handler(CallbackQueryHandler(shop_callback, pattern="^(shopmain_|shopbuy_)"))
     
@@ -1695,10 +1693,6 @@ def main():
             if uid in ADMIN_STATES and ADMIN_STATES[uid] == "WAITING_FOR_LOGS_ID":
                 del ADMIN_STATES[uid]
                 await handle_admin_logs_input(update, uid, txt)
-                return
-                
-            if txt in ["🎲 پرتاب تاس", "👤 پروفایل من", "🏆 تالار افتخارات", "🏪 بازارچه لقب", "ℹ️ راهنمای کلوب"]:
-                await monitor_messages_and_inputs(update, context)
                 return
                 
         await monitor_messages_and_inputs(update, context)
