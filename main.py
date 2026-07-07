@@ -1239,17 +1239,18 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ این چالش دیگر معتبر نیست.", show_alert=True)
             return
             
-        if action == "reject":
-            execute_write("UPDATE offline_duels SET status = 'rejected' WHERE duel_id = %s", (token,))
-            await query.answer()
-            await query.edit_message_text("🏳️ درخواست چالش دوئل غیابی رد شد.")
-            return
+            if action == "reject":
+        execute_write("UPDATE offline_duels SET status = 'rejected' WHERE duel_id = %s", (token,))
+        await query.answer()
+        await query.edit_message_text("❌ درخواست چالش دوئل غیابی رد شد.")
+        return
 
-         if action == "accept":
-            p1_id = int(duel.get('creator_id', 0))
-            p2_id = user_id
-            wager = int(duel.get('wager', 0))
-            rounds = int(duel.get('rounds', 3))
+    if action == "accept":
+        p1_id = int(duel.get('creator_id', 0))
+        p2_id = user_id
+        wager = int(duel.get('wager', 0))
+        rounds = int(duel.get('rounds', 3))
+
             
             p2_username = query.from_user.username if query.from_user.username else query.from_user.first_name
             get_or_create_user(p2_id, p2_username)
