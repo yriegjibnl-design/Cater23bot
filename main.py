@@ -1469,8 +1469,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: 
                 pass
             return
-
-    if data[0] == "gduel":
         # === 7. SECURE GROUP DUEL BATTLE ENGINE WITH COOPERATIVE PERKS ===
     if data[0] == "gduel":
         action = data[1]
