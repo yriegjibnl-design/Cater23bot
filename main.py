@@ -1717,37 +1717,52 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"🎉 تگ ویژه « {i_name} » فعال و به کمد افتخارات شما اضافه شد!")
 # ==========================================
 # MESSAGES MONITORING & STATE ROUTING
-# ==========================================
-async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
+# ==========================================async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Safely processes text inputs, dashboard syncs, and PV duel targets with structural guards."""
+    if not update.message or not update.message.text: 
+        return
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
+    # === 1. SECURE ADMIN LEADERBOARD SYNCHRONIZER ===
     if is_user_admin(user_id) and ("تالار مشاهیر" in text or "۱۰ گلادیاتور برتر" in text) and "XP" in text:
-        lines = text.split("\n"); current_username = None; updated_count = 0
+        lines = text.split("\n")
+        current_username = None
+        updated_count = 0
         for line in lines:
             user_match = re.search(r'(?:\d+\.\s*|👑|⚡|🛡️|🎖️)\s*([A-Za-z0-9_]+)', line)
-            if user_match: current_username = user_match.group(1).strip()
+            if user_match: 
+                current_username = user_match.group(1).strip()
             score_match = re.search(r'(?:⭐\s*|\b)(\d+)\s*XP', line)
             if score_match and current_username:
-                score_val = int(score_match.group(1)); rank_val = calculate_rank(score_val)
-                user_check = execute_read_one("SELECT 1 FROM users WHERE username = %s", (current_username,))
+                score_val = int(score_match.group(1))
+                rank_val = calculate_rank(score_val)
+                
+                # Wrapped query result into a secure dict lookup guard
+                raw_check = execute_read_one("SELECT 1 FROM users WHERE username = %s", (current_username,))
+                user_check = dict(raw_check) if raw_check else {}
+                
                 if user_check:
                     execute_write("UPDATE users SET score = %s, rank = %s WHERE username = %s", (score_val, rank_val, current_username))
                 else:
-                    fake_id = -random.randint(1000000, 9999999); now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    fake_id = -random.randint(1000000, 9999999)
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     execute_write("""
                         INSERT INTO users (telegram_id, username, score, rank, created_at, last_seen, unlocked_titles, unlocked_perks) 
                         VALUES (%s, %s, %s, %s, %s, %s, '[]', '[]')
                     """, (fake_id, current_username, score_val, rank_val, now_str, now_str))
-                updated_count += 1; current_username = None
+                updated_count += 1
+                current_username = None
+                
         if updated_count > 0:
             await update.message.reply_text(f"✅ آمار {updated_count} کاربر بازیابی و ثبت شد.")
             return
 
+    # === 2. SAFE USER AUTO-REGISTRATION ===
     p_name = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     get_or_create_user(user_id, p_name)
 
+    # === 3. REPLY KEYBOARD NAVIGATION DISPATCHER ===
     if text == "🎲 پرتاب تاس": 
         await dice_command(update, context)
         return
@@ -1764,20 +1779,34 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
         await help_command(update, context)
         return
 
+    # === 4. SECURE PV DUEL TARGET ACQUISITION SYSTEM ===
     if user_id in PV_DUEL_STATES and PV_DUEL_STATES[user_id] == "WAITING_FOR_TARGET_NUMBER":
         del PV_DUEL_STATES[user_id]
         try:
             selection = int(text)
-            if selection < 1 or selection > 10: raise ValueError
+            if selection < 1 or selection > 10: 
+                raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ عدد نامعتبر است!"); return
+            await update.message.reply_text("❌ عدد نامعتبر است!")
+            return
+            
         top_players = get_top_players()
         if selection > len(top_players):
-            await update.message.reply_text("❌ این شماره وجود ندارد!"); return
-        target_player = top_players[selection - 1]
-        target_id = target_player['telegram_id']; target_name = target_player['username']
+            await update.message.reply_text("❌ این شماره وجود ندارد!")
+            return
+            
+        # Standardizing dictionary access via .get() methods safely
+        target_player = dict(top_players[selection - 1]) if top_players[selection - 1] else {}
+        target_id = target_player.get('telegram_id')
+        target_name = target_player.get('username', 'نامشخص')
+        
+        if not target_id:
+            await update.message.reply_text("❌ خطایی در بازخوانی اطلاعات بازیکن رخ داد!")
+            return
         if target_id == user_id:
-            await update.message.reply_text("❌ نمی‌توانی به خودت درخواست بدهی!"); return
+            await update.message.reply_text("❌ نمی‌توانی به خودت درخواست بدهی!")
+            return
+            
         keyboard = [[
             InlineKeyboardButton("⚔️ قبول نبرد", callback_data=f"pvduel_yes_{user_id}_{target_id}"),
             InlineKeyboardButton("🏳️ رد درخواست", callback_data=f"pvduel_no_{user_id}_{target_id}")
@@ -1785,124 +1814,221 @@ async def monitor_messages_and_inputs(update: Update, context: ContextTypes.DEFA
         try:
             await context.bot.send_message(chat_id=target_id, text=f"⚔️ درخواست دوئل پیوی از طرف @{p_name}", reply_markup=InlineKeyboardMarkup(keyboard))
             await update.message.reply_markdown(f"🚀 درخواست برای @{target_name} فرستاده شد.")
-        except: await update.message.reply_text("❌ امکان ارسال پیام به حریف مقدور نبود!")
+        except: 
+            await update.message.reply_text("❌ امکان ارسال پیام به حریف مقدور نبود!")
         return
 
+        # === 5. SECURE ADMIN FSM EVENT CONFIGURATION INTERCEPTOR ===
     if user_id in ADMIN_STATES:
         state = ADMIN_STATES[user_id]
         
+        # --- Config State: Fetch Dice Number for Lucky Dice Event ---
         if state.startswith("EV_GET_DICE_"):
-            ev_id = int(state.split("_")[3])
+            try:
+                ev_id = int(state.split("_")[3])
+            except (IndexError, ValueError):
+                ev_id = 2 # Safe fallback
+                
             try:
                 dice_num = int(text)
-                if dice_num < 1 or dice_num > 6: raise ValueError
+                if dice_num < 1 or dice_num > 6: 
+                    raise ValueError
             except ValueError:
-                await update.message.reply_text("❌ فقط عدد ۱ تا ۶ وارد کنید!"); return
+                await update.message.reply_text("❌ فقط عدد ۱ تا ۶ وارد کنید!")
+                return
+                
             ADMIN_STATES[user_id] = f"EV_GET_HOURS_{ev_id}_{dice_num}"
             await update.message.reply_text("🕒 حالا مدت زمان این ایونت را به **ساعت** وارد کنید (مثلاً 4):")
             return
 
+        # --- Config State: Fetch Discount Percent for Shop Sale Event ---
         elif state.startswith("EV_GET_DISCOUNT_"):
-            ev_id = int(state.split("_")[3])
             try:
-                disc = int(text)
+                ev_id = int(state.split("_")[3])
+            except (IndexError, ValueError):
+                ev_id = 15 # Safe fallback
+                
+            try:
+                disc = max(1, min(100, int(text))) # Confining discount range between 1% and 100%
             except ValueError:
-                await update.message.reply_text("❌ درصد تخفیف معتبر نیست!"); return
+                await update.message.reply_text("❌ درصد تخفیف معتبر نیست! لطفاً یک عدد وارد کنید:")
+                return
+                
             ADMIN_STATES[user_id] = f"EV_GET_HOURS_{ev_id}_{disc}"
             await update.message.reply_text("🕒 حالا مدت زمان این ایونت را به **ساعت** وارد کنید (مثلاً 12):")
             return
 
+        # --- Config State: Fetch Total Hours & Finalize Metadata ---
         elif state.startswith("EV_GET_HOURS_"):
             parts = state.split("_")
-            ev_id = int(parts[3])
-            param = parts[4] if len(parts) > 4 else "0"
+            try:
+                ev_id = int(parts[3])
+                param = parts[4] if len(parts) > 4 else "0"
+            except (IndexError, ValueError):
+                await update.message.reply_text("❌ خطایی در خواندن اطلاعات استیت رخ داد. فرآیند لغو شد.")
+                del ADMIN_STATES[user_id]
+                return
+                
             try:
                 hours = float(text)
+                if hours <= 0: 
+                    raise ValueError
             except ValueError:
-                await update.message.reply_text("❌ مقدار ساعت نامعتبر است!"); return
+                await update.message.reply_text("❌ مقدار ساعت نامعتبر است! لطفاً یک عدد بزرگتر از صفر وارد کنید:")
+                return
             
+            # Interactive Reward Verification for specific Event IDs
             if ev_id in [7, 8, 22]:
                 ADMIN_STATES[user_id] = f"EV_ASK_REWARD_{ev_id}_{hours}_{param}"
-                kb = [[InlineKeyboardButton("آره 🎁", callback_data=f"evrew_yes_{ev_id}_{hours}_{param}"),
-                       InlineKeyboardButton("نه ❌", callback_data=f"evrew_no_{ev_id}_{hours}_{param}")]]
+                kb = [
+                    [
+                        InlineKeyboardButton("آره 🎁", callback_data=f"evrew_yes_{ev_id}_{hours}_{param}"),
+                        InlineKeyboardButton("نه ❌", callback_data=f"evrew_no_{ev_id}_{hours}_{param}")
+                    ]
+                ]
                 await update.message.reply_text("🎁 آیا می‌خواهید برای پایان زمان این ایونت پاداش اتوماتیک بگذارید؟", reply_markup=InlineKeyboardMarkup(kb))
             else:
                 await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             return
 
+                # --- Config State: Finalize Custom Reward Configurations ---
         elif state.startswith("EV_VAL_REWARD_"):
             parts = state.split("_")
-            ev_id = int(parts[3])
-            hours = float(parts[4])
-            param = parts[5]
-            rew_type = parts[6]
+            try:
+                ev_id = int(parts[3])
+                hours = float(parts[4])
+                param = parts[5]
+                rew_type = parts[6]
+            except (IndexError, ValueError):
+                await update.message.reply_text("❌ خطا در تحلیل ساختار پاداش رویداد!")
+                del ADMIN_STATES[user_id]
+                return
             await finalize_and_broadcast_event(update, context, ev_id, hours, param, rew_type, text)
             return
 
+        # --- Admin Action: Safe Global Broadcast Mechanism ---
         elif state == "WAITING_FOR_BROADCAST":
             del ADMIN_STATES[user_id]
-            rows = execute_read_all('SELECT telegram_id FROM users')
+            raw_rows = execute_read_all('SELECT telegram_id FROM users')
+            rows = [dict(r) for r in raw_rows] if raw_rows else []
+            
+            await update.message.reply_text(f"📢 ارسال پیام همگانی به {len(rows)} کاربر آغاز شد...")
             for row in rows:
-                try: await context.bot.send_message(chat_id=row['telegram_id'], text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
-                except: continue
-            await update.message.reply_text("✅ پیام همگانی فرستاده شد.")
+                t_id = row.get('telegram_id')
+                if not t_id:
+                    continue
+                try: 
+                    await context.bot.send_message(chat_id=int(t_id), text=f"📢 **اطلاعیه مدیریت:**\n\n{text}", parse_mode="Markdown")
+                except: 
+                    continue
+            await update.message.reply_text("✅ پیام همگانی با موفقیت برای تمامی کاربران فعال فرستاده شد.")
+
+        # --- Admin Action: Wait for Username to Modify Scores ---
         elif state == "WAITING_FOR_CUSTOM_USER":
-            ADMIN_STATES[user_id] = f"SET_SCORE_VAL_{text.replace('@', '')}"
-            await update.message.reply_text(f"🔢 حالا مقدار امتیازی که می‌خواهی اختصاص دهی را وارد کن:")
+            clean_user = text.replace('@', '').strip()
+            ADMIN_STATES[user_id] = f"SET_SCORE_VAL_{clean_user}"
+            await update.message.reply_text(f"🔢 حالا مقدار امتیازی که می‌خواهی به @{clean_user} اختصاص دهی را وارد کن:")
+
+        # --- Admin Action: Finalize Custom Score Updates ---
         elif state.startswith("SET_SCORE_VAL_"):
             target_username = state.replace("SET_SCORE_VAL_", "")
             del ADMIN_STATES[user_id]
-            try: target_score = int(text)
-            except ValueError: await update.message.reply_text("❌ خطا!"); return
+            try: 
+                target_score = int(text)
+            except ValueError: 
+                await update.message.reply_text("❌ امتیاز وارد شده باید یک عدد صحیح باشد!"); return
+                
             new_rank = calculate_rank(target_score)
             changes = execute_write("UPDATE users SET score = %s, rank = %s WHERE username = %s", (target_score, new_rank, target_username))
-            await update.message.reply_text(f"🚀 امتیاز کاربر @{target_username} تغییر کرد." if changes > 0 else "❌ کاربر یافت نشد.")
+            await update.message.reply_text(f"🚀 امتیاز کاربر @{target_username} تغییر کرد." if changes > 0 else "❌ کاربر یافت نشد یا تغییری ایجاد نشد.")
+
+        # --- Admin Action: Completely Reset a Specific User Profile ---
         elif state == "WAITING_FOR_USERNAME_RESET":
-            del ADMIN_STATES[user_id]; target = text.replace("@", "")
+            del ADMIN_STATES[user_id]
+            target = text.replace("@", "").strip()
             changes = execute_write("UPDATE users SET score = 0, rank = '🥉 Bronze I', title = 'بدون لقب' WHERE username = %s", (target,))
-            await update.message.reply_text("🧹 حساب کاربر صفر شد." if changes > 0 else "❌ پیدا نشد.")
+            await update.message.reply_text("🧹 حساب کاربر صفر و مشخصاتش ریست شد." if changes > 0 else "❌ کاربر مورد نظر در سیستم پیدا نشد.")
+
+        # --- Admin Action: Initialize Redeem Code Sequence ---
         elif state == "WAITING_FOR_REDEEM_CODE":
-            ADMIN_STATES[user_id] = f"REDEEM_TITLE_{text}"
+            clean_rc = text.strip()
+            ADMIN_STATES[user_id] = f"REDEEM_TITLE_{clean_rc}"
             await update.message.reply_text("✨ نام تگ یا لقبی که با این ردیم‌کد اهدا می‌شود را ارسال کنید:")
+
+        # --- Admin Action: Attach Title to Redeem Code ---
         elif state.startswith("REDEEM_TITLE_"):
             rc_code = state.replace("REDEEM_TITLE_", "")
-            ADMIN_STATES[user_id] = f"REDEEM_USES_{rc_code}_{text}"
+            ADMIN_STATES[user_id] = f"REDEEM_USES_{rc_code}|||{text.strip()}"
             await update.message.reply_text("👥 تعداد دفعات مجاز استفاده را وارد کنید:")
+
+        # --- Admin Action: Set Max Uses for Redeem Code ---
         elif state.startswith("REDEEM_USES_"):
-            parts = state.split("_"); rc_code = parts[2]; rc_title = parts[3]
-            try: rc_uses = int(text)
-            except ValueError: return
-            ADMIN_STATES[user_id] = f"REDEEM_HOURS_{rc_code}_{rc_title}_{rc_uses}"
-            await update.message.reply_text("⏱️ مدت زمان ماندگاری تگ روی پروفایل (ساعت):")
+            payload = state.replace("REDEEM_USES_", "")
+            parts = payload.split("|||") if "|||" in payload else payload.split("_", 1)
+            rc_code = parts[0]
+            rc_title = parts[1] if len(parts) > 1 else "لقب هدیه"
+            
+            try: 
+                rc_uses = int(text)
+            except ValueError: 
+                await update.message.reply_text("❌ لطفا یک عدد صحیح برای دفعات مجاز وارد کنید:")
+                return
+            ADMIN_STATES[user_id] = f"REDEEM_HOURS_{rc_code}|||{rc_title}|||{rc_uses}"
+            await update.message.reply_text("⏱️ مدت زمان ماندگاری تگ روی پروفایل را به ساعت وارد کنید:")
+
+        # --- Admin Action: Finalize and Store Redeem Code Configuration ---
         elif state.startswith("REDEEM_HOURS_"):
-            parts = state.split("_"); rc_code = parts[2]; rc_title = parts[3]; rc_uses = int(parts[4])
+            payload = state.replace("REDEEM_HOURS_", "")
+            parts = payload.split("|||")
             del ADMIN_STATES[user_id]
-            try: rc_hours = int(text)
-            except ValueError: return
+            
+            try: 
+                rc_code = parts[0]
+                rc_title = parts[1]
+                rc_uses = int(parts[2])
+                rc_hours = int(text)
+            except (IndexError, ValueError): 
+                await update.message.reply_text("❌ خطا در پردازش متادیتای ردیم کد!"); return
+                
             execute_write('INSERT INTO redeem_codes (code, title_name, max_uses, duration_hours) VALUES (%s, %s, %s, %s) ON CONFLICT(code) DO UPDATE SET title_name=EXCLUDED.title_name, max_uses=EXCLUDED.max_uses, duration_hours=EXCLUDED.duration_hours',
                           (rc_code, rc_title, rc_uses, rc_hours))
-            await update.message.reply_text(f"✅ ردیم کد `{rc_code}` ساخته شد.")
+            await update.message.reply_text(f"✅ ردیم کد جدید با موفقیت ساخته شد:\n🔑 کد: `{rc_code}`\n🏅 تگ: {rc_title}\n👥 ظرفیت: {rc_uses} بار\n⏱️ انقضا: {rc_hours} ساعت")
+
+        # --- Admin Action: Create New Shop Title Item ---
         elif state == "WAITING_FOR_SHOP_TITLE":
-            ADMIN_STATES[user_id] = f"SHOP_CAT_{text}"
-            keyboard = [[InlineKeyboardButton("🥈 لقب عادی", callback_data=f"setcat_normal_{text}")],
-                        [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data=f"setcat_epic_{text}")],
-                        [InlineKeyboardButton("👑 لقب لجندری", callback_data=f"setcat_legendary_{text}")]]
+            clean_t = text.strip()
+            ADMIN_STATES[user_id] = f"SHOP_CAT_{clean_t}"
+            keyboard = [
+                [InlineKeyboardButton("🥈 لقب عادی", callback_data=f"setcat_normal_{clean_t}")],
+                [InlineKeyboardButton("🔮 لقب افسانه‌ای", callback_data=f"setcat_epic_{clean_t}")],
+                [InlineKeyboardButton("👑 لقب لجندری", callback_data=f"setcat_legendary_{clean_t}")]
+            ]
             await update.message.reply_text("📂 دسته‌بندی لقب جدید را مشخص کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        # --- Admin Action: Commit Final Shop Item and Price Configuration ---
         elif state.startswith("SHOP_PRICE_"):
-            parts = state.split("_"); new_title = parts[2]; cat_type = parts[3]
+            payload = state.replace("SHOP_PRICE_", "")
+            parts = payload.split("_", 1)
+            new_title = parts[0]
+            cat_type = parts[1] if len(parts) > 1 else "normal"
+            
             del ADMIN_STATES[user_id]
-            try: price = int(text)
-            except ValueError: return
+            try: 
+                price = int(text)
+            except ValueError: 
+                await update.message.reply_text("❌ قیمت وارد شده معتبر نیست!"); return
             try:
                 execute_write("INSERT INTO shop (title_name, cost, category, item_type) VALUES (%s, %s, %s, 'title')", (new_title, price, cat_type))
-                await update.message.reply_text(f"✅ لقب « {new_title} » به شاپ اضافه شد.")
+                await update.message.reply_text(f"✅ لقب « {new_title} » با قیمت {price} XP به شاپ اضافه شد.")
             except: 
-                await update.message.reply_text("❌ این تگ قبلاً ثبت شده است.")
+                await update.message.reply_text("❌ این تگ قبلاً در لیست کاتالوگ بازارچه ثبت شده است.")
         return
 
+    # === 6. SECURE GLOBAL AUTO-REDEEM INLINE HOOK ===
     clean_code = text.replace("/redeem ", "").replace("/redeem", "").replace("/", "").strip()
     if clean_code:
-        cdata = execute_read_one('SELECT 1 FROM redeem_codes WHERE code = %s', (clean_code,))
+        raw_cdata = execute_read_one('SELECT 1 FROM redeem_codes WHERE code = %s', (clean_code,))
+        cdata = dict(raw_cdata) if raw_cdata else {}
         if cdata:
             context.args = [clean_code]
             await redeem_command(update, context)
@@ -1952,8 +2078,10 @@ async def finalize_and_broadcast_event(update, context, ev_id, hours, param, rew
 # EXPANSIVE PROMO CODE REDEMPTION SYSTEMS
 # ==========================================
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Processes gift code redemptions securely with data type conversion guards."""
     logger.info(f"Command /redeem triggered by user {update.effective_user.id}")
     user_id = update.effective_user.id
+    
     if context.args:
         code = context.args[0].strip().lower()
     else:
@@ -1963,33 +2091,55 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ فرمت اشتباه است. مثال: `/redeem ARIA88` یا ارسال مستقیم خود کد کلمه‌ای.")
         return
         
-    cdata = execute_read_one('SELECT * FROM redeem_codes WHERE LOWER(code) = %s', (code,))
-    if not cdata or cdata['current_uses'] >= cdata['max_uses']:
-        await update.message.reply_text("❌ کد معتبر نیست یا منقضی شده."); return
+    # Standardizing db result into a robust dictionary
+    raw_cdata = execute_read_one('SELECT * FROM redeem_codes WHERE LOWER(code) = %s', (code,))
+    cdata = dict(raw_cdata) if raw_cdata else {}
+    
+    current_uses = int(cdata.get('current_uses', 0))
+    max_uses = int(cdata.get('max_uses', 0))
+    title_name = cdata.get('title_name', '')
+    duration_hours = int(cdata.get('duration_hours', 24))
+    
+    if not cdata or current_uses >= max_uses:
+        await update.message.reply_text("❌ کد معتبر نیست یا منقضی شده است.")
+        return
         
     hist = execute_read_one('SELECT 1 FROM redeem_history WHERE telegram_id = %s AND code = %s', (user_id, code))
     if hist: 
-        await update.message.reply_text("❌ شما قبلاً این کد را استفاده کرده‌اید."); return
+        await update.message.reply_text("❌ شما قبلاً این کد هدیه را استفاده کرده‌اید.")
+        return
     
-    user_data = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
-    unlocked_titles = json.loads(user_data['unlocked_titles'] if user_data['unlocked_titles'] else '[]')
+    # Safe user lookup with fallback parser guards
+    raw_user = get_or_create_user(user_id, update.effective_user.username if update.effective_user.username else update.effective_user.first_name)
+    user_data = dict(raw_user) if raw_user else {}
     
-    if cdata['title_name'] not in unlocked_titles:
-        unlocked_titles.append(cdata['title_name'])
+    titles_raw = user_data.get('unlocked_titles')
+    if isinstance(titles_raw, str):
+        unlocked_titles = json.loads(titles_raw) if titles_raw else []
+    else:
+        unlocked_titles = titles_raw if isinstance(titles_raw, list) else []
+    
+    if title_name and title_name not in unlocked_titles:
+        unlocked_titles.append(title_name)
         
-    expire_time = (datetime.now() + timedelta(hours=cdata['duration_hours'])).strftime("%Y-%m-%d %H:%M:%S")
-    execute_write('INSERT INTO redeem_history (telegram_id, code, used_at) VALUES (%s, %s, %s)', (user_id, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    execute_write('UPDATE redeem_codes SET current_uses = current_uses + 1 WHERE code = %s', (code,))
-    execute_write('UPDATE users SET title = %s, title_expire = %s, unlocked_titles = %s WHERE telegram_id = %s', (cdata['title_name'], expire_time, json.dumps(unlocked_titles), user_id))
+    expire_time = (datetime.now() + timedelta(hours=duration_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    await update.message.reply_text(f"🎉 کد هدیه فعال شد و لقب موقت **{cdata['title_name']}** به ویترین شما اضافه و فعال گردید.")
-
+    execute_write('INSERT INTO redeem_history (telegram_id, code, used_at) VALUES (%s, %s, %s)', (user_id, code, now_str))
+    execute_write('UPDATE redeem_codes SET current_uses = current_uses + 1 WHERE code = %s', (code,))
+    execute_write('UPDATE users SET title = %s, title_expire = %s, unlocked_titles = %s WHERE telegram_id = %s', (title_name, expire_time, json.dumps(unlocked_titles), user_id))
+    
+    await update.message.reply_text(f"🎉 کد هدیه فعال شد و لقب موقت **{title_name}** به ویترین شما اضافه و فعال گردید.")
+    return
 # ==========================================
 # ADMINISTRATIVE HEADQUARTERS ROOM CONTROL
 # ==========================================
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generates the interactive core control center panel for verified admins."""
     logger.info(f"Command /admin triggered by user {update.effective_user.id}")
-    if not is_user_admin(update.effective_user.id): return
+    if not is_user_admin(update.effective_user.id): 
+        return
+        
     keyboard = [
         [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
         [InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"), InlineKeyboardButton("🔄 باز‌یابی پیام رنک", callback_data="admin_restore_msg")],
@@ -2003,16 +2153,35 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛠 **اتاق فرمان مدیریت پیشرفته ربات:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles admin dashboard button callbacks securely with access restriction guards."""
     logger.info(f"Admin callback control triggered by user {update.effective_user.id}")
-    query = update.callback_query; user_id = query.from_user.id; data = query.data
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    
+    # Secure Fire-wall Guard: Authenticate admin permission for all button interactions
+    if not is_user_admin(user_id):
+        await query.answer("❌ شما دسترسی به این بخش مدیریت را ندارید!", show_alert=True)
+        return
+        
     await query.answer()
     
+    # 1. PROCESSING SHOP TITLE CATEGORY SETTINGS (WITH EXTENDED CHAR SPLIT PROTECTION)
     if data.startswith("setcat_"):
-        parts = data.split("_"); cat_type = parts[1]; title_name = parts[2]
+        payload = data.replace("setcat_", "")
+        parts = payload.split("_", 1)  # Limits splitting to 1 time to preserve strings with underscores
+        try:
+            cat_type = parts[0]
+            title_name = parts[1]
+        except IndexError:
+            await query.edit_message_text("❌ ساختار شناسه کاتالوگ نامعتبر است.")
+            return
+            
         ADMIN_STATES[user_id] = f"SHOP_PRICE_{title_name}_{cat_type}"
         await query.edit_message_text(f"💰 قیمت لقب « {title_name} » را وارد کنید:")
         return
 
+    # 2. EVENTS ROOT CATALOG DIRECTORY NAVIGATION
     if data == "admin_events_root":
         kb = []
         for ev_id, ev_name in EVENT_NAMES_LIST.items():
@@ -2021,15 +2190,29 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🕹️ **منوی مدیریت فوق پیشرفته ایونت‌ها:**\nایونت مدنظر را جهت پیکربندی انتخاب کنید:", reply_markup=InlineKeyboardMarkup(kb))
         return
 
+    # 3. INTERACTIVE INDIVIDUAL EVENT CONFIGURATION POP-UP
     if data.startswith("ev_manage_"):
-        ev_id = int(data.split("_")[2])
-        kb = [[InlineKeyboardButton("بله، فعال شود ✅", callback_data=f"ev_trigger_yes_{ev_id}"),
-               InlineKeyboardButton("لغو ❌", callback_data="admin_events_root")]]
-        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST[ev_id]}»** اطمینان دارید؟", reply_markup=InlineKeyboardMarkup(kb))
+        try:
+            ev_id = int(data.split("_")[2])
+        except (IndexError, ValueError):
+            return
+            
+        kb = [
+            [
+                InlineKeyboardButton("بله، فعال شود ✅", callback_data=f"ev_trigger_yes_{ev_id}"),
+                InlineKeyboardButton("لغو ❌", callback_data="admin_events_root")
+            ]
+        ]
+        await query.edit_message_text(f"⚔️ آیا از فعال‌سازی رویداد **«{EVENT_NAMES_LIST.get(ev_id, 'ناشناس')}»** اطمینان دارید؟", reply_markup=InlineKeyboardMarkup(kb))
         return
 
+    # 4. DISPATCH STATE MACHINE BASED ON SELECTED EVENT TYPE
     if data.startswith("ev_trigger_yes_"):
-        ev_id = int(data.split("_")[3])
+        try:
+            ev_id = int(data.split("_")[3])
+        except (IndexError, ValueError):
+            return
+            
         if ev_id == 2:
             ADMIN_STATES[user_id] = f"EV_GET_DICE_{ev_id}"
             await query.edit_message_text("🎯 شانس کدام تاس را می‌خواهی زیاد کنی? (عدد ۱ تا ۶ را به صورت متنی بفرست):")
@@ -2038,31 +2221,43 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("💰 درصد تخفیف شاپ را به عدد وارد کن (مثلاً 50):")
         else:
             ADMIN_STATES[user_id] = f"EV_GET_HOURS_{ev_id}_0"
-            await query.edit_message_text("🕒 مدت زمان ایونت را به **ساعت** وارد کنید (مثلاً 2 یا 24):")
+            await update.effective_chat.send_message("🕒 مدت زمان ایونت را به **ساعت** وارد کنید (مثلاً 2 یا 24):")
         return
 
+    # 5. POST-EVENT REWARD SEQUENCING PROMPTS
     if data.startswith("evrew_"):
         parts = data.split("_")
-        choice = parts[1]
-        ev_id = int(parts[2])
-        hours = float(parts[3])
-        param = parts[4]
+        try:
+            choice = parts[1]
+            ev_id = int(parts[2])
+            hours = float(parts[3])
+            param = parts[4]
+        except (IndexError, ValueError):
+            return
         
         if choice == "no":
             await finalize_and_broadcast_event(update, context, ev_id, hours, param, "none", "")
             await query.edit_message_text("✅ ایونت با موفقیت فعال و فرستاده شد.")
         else:
-            kb = [[InlineKeyboardButton("امتیاز (XP) 💰", callback_data=f"evtype_score_{ev_id}_{hours}_{param}"),
-                   InlineKeyboardButton("تگ اختصاصی (Tag) 🏷️", callback_data=f"evtype_tag_{ev_id}_{hours}_{param}")]]
+            kb = [
+                [
+                    InlineKeyboardButton("امتیاز (XP) 💰", callback_data=f"evtype_score_{ev_id}_{hours}_{param}"),
+                    InlineKeyboardButton("تگ اختصاصی (Tag) 🏷️", callback_data=f"evtype_tag_{ev_id}_{hours}_{param}")
+                ]
+            ]
             await query.edit_message_text("🎁 نوع جایزه پایان رویداد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(kb))
         return
 
+        # 6. PROCESSING FINAL EVENT REWARD METADATA VALUE TYPES
     if data.startswith("evtype_"):
         parts = data.split("_")
-        rew_type = parts[1]
-        ev_id = int(parts[2])
-        hours = float(parts[3])
-        param = parts[4]
+        try:
+            rew_type = parts[1]
+            ev_id = int(parts[2])
+            hours = float(parts[3])
+            param = parts[4]
+        except (IndexError, ValueError):
+            return
         
         ADMIN_STATES[user_id] = f"EV_VAL_REWARD_{ev_id}_{hours}_{param}_{rew_type}"
         if rew_type == "score":
@@ -2071,12 +2266,14 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("✨ نام تگ انحصاری پایان رویداد را بنویسید (مثلاً: 👑 سلطان دوئل):")
         return
 
+    # 7. GLOBAL TERMINATION OF ACTIVE EVENT LIFECYCLES
     if data == "admin_reset_all_events":
         execute_write("DELETE FROM active_event")
         execute_write("UPDATE users SET title = 'بدون لقب', title_expire = NULL")
         await query.edit_message_text("🔄 **ریست با موفقیت انجام شد!**\n\nتمام ایونت‌های فعال به پایان رسیدند و تگ/لقب همه کاربران غیرفعال شد. آمار امتیازات، برد و باخت‌ها و رنک گلادیاتورها کاملاً محفوظ مانده است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
         return
 
+    # 8. RE-RENDERING ADMIN ROOT CONTROLS MAIN MENU
     if data == "admin_home":
         keyboard = [
             [InlineKeyboardButton("📊 لیست کاربران", callback_data="admin_users"), InlineKeyboardButton("🏆 تالار مشاهیر", callback_data="admin_top")],
@@ -2089,57 +2286,119 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")]
         ]
         await query.edit_message_text("🛠 **اتاق فرمان مدیریت پویای ربات:**", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # 9. FETCH TOP 15 RANKED USERS WITH CONVERSION GUARDS
     elif data == "admin_users":
-        users = execute_read_all('SELECT username, score, rank FROM users ORDER BY score DESC LIMIT 15')
+        raw_users = execute_read_all('SELECT username, score, rank FROM users ORDER BY score DESC LIMIT 15')
+        users_list = [dict(u) for u in raw_users] if raw_users else []
+        
         txt = "📊 **آمار کاربران برتر:**\n\n"
-        for idx, u in enumerate(users): txt += f"{idx+1}. 👤 @{u['username']} | ⭐ {u['score']} XP | {u['rank']}\n"
+        for idx, u in enumerate(users_list): 
+            u_name = u.get('username', 'نامشخص')
+            u_score = u.get('score', 0)
+            u_rank = u.get('rank', '🥉 Bronze I')
+            txt += f"{idx+1}. 👤 @{u_name} | ⭐ {u_score} XP | {u_rank}\n"
+            
         await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+        return
+
+    # 10. SAFE INLINE REDIRECT FOR LEADERBOARD OVERVIEWS
     elif data == "admin_top":
-        text, kb = await top_command(update, context)
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+        # Dynamic fallback to prevent NoneType execution failures
+        top_players = get_top_players()
+        txt = "🏆 **جدول ۱۰ گلادیاتور برتر کلوب:**\n\n"
+        for idx, p in enumerate(top_players[:10]):
+            d_p = dict(p)
+            txt += f"{idx+1}. @{d_p.get('username', 'نامشخص')} ━ {d_p.get('score', 0)} XP\n"
+        await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+        return
+
     elif data == "admin_restore_msg":
         restore_text = "🏆 نمونه پیام تالار مشاهیر جهت ریست و آپدیت خودکار دیتابیس بوسیله کپی..."
         await query.edit_message_text(restore_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_home")]]))
+        return
+        
     elif data == "admin_broadcast":
         ADMIN_STATES[user_id] = "WAITING_FOR_BROADCAST"
         await query.edit_message_text("📢 متن پیام همگانی خود را ارسال کنید:")
+        return
+        
     elif data == "admin_set_score":
         ADMIN_STATES[user_id] = "WAITING_FOR_CUSTOM_USER"
         await query.edit_message_text("👤 نام کاربری فرد مورد نظر را بدون @ بفرستید:")
+        return
+        
     elif data == "admin_reset_score":
         ADMIN_STATES[user_id] = "WAITING_FOR_USERNAME_RESET"
         await query.edit_message_text("🧹 نام کاربری فرد مورد نظر را بدون @ بفرستید:")
+        return
+        
     elif data == "admin_add_shop":
         ADMIN_STATES[user_id] = "WAITING_FOR_SHOP_TITLE"
         await query.edit_message_text("✨ نام تگ اختصاصی جدید را بفرستید:")
+        return
+        
     elif data == "admin_make_redeem":
         ADMIN_STATES[user_id] = "WAITING_FOR_REDEEM_CODE"
         await query.edit_message_text("🔑 لطفا کد کلمه‌ای ردیم کد مدنظرتان را ارسال کنید یا عبارت `رندم` را بفرستید:")
+        return
+        
     elif data == "admin_check_logs":
         ADMIN_STATES[user_id] = "WAITING_FOR_LOGS_ID"
         await query.edit_message_text("📊 لطفا آیدی عددی کاربر مورد نظر را بفرستید:")
+        return
+        
     elif data == "admin_close":
         await query.edit_message_text("🔒 پنل مدیریت بسته شد.")
+        return
 
+# === 11. SECURE ADMINISTRATIVE ANALYTICS QUERY GENERATOR ===
 async def handle_admin_logs_input(update: Update, user_id, text):
-    try: target_id = int(text)
-    except ValueError: return
-    logs = execute_read_all('SELECT game_type, count FROM score_logs WHERE telegram_id = %s', (target_id,))
+    """Generates structured profile analytics reports including recent game logs."""
+    try: 
+        target_id = int(text)
+    except ValueError: 
+        await update.message.reply_text("❌ آیدی فرستاده شده باید تماماً عدد باشد!")
+        return
+        
+    raw_logs = execute_read_all('SELECT game_type, count FROM score_logs WHERE telegram_id = %s', (target_id,))
+    logs = [dict(l) for l in raw_logs] if raw_logs else []
+    
     if not logs: 
-        await update.message.reply_text("📊 لاگی یافت نشد."); return
-    report = f"📊 **گزارش آیدی `{target_id}`:**\n\n"
+        await update.message.reply_text("📊 هیچ سابقه یا لاگ امتیازی برای این آیدی ثبت نشده است.")
+        return
+        
+    report = f"📊 **گزارش آماری دقیق برای آیدی `{target_id}`:**\n\n"
     for row in logs:
-        gname = "🎲 تاس انفرادی" if row['game_type'] == "solo_roll" else "⚔️ نبرد دوئل"
-        report += f"🔹 تعداد بازی در بخش {gname}: `{row['count']}` بار\n"
+        gtype = row.get('game_type', '')
+        gcount = row.get('count', 0)
+        
+        if gtype == "solo_roll":
+            gname = "🎲 تاس انفرادی پی‌وی"
+        elif gtype == "pv_duel":
+            gname = "⚔️ نبرد دوئل انفرادی (PV)"
+        elif gtype == "group_duel":
+            gname = "💥 دوئل مبارزات گروهی"
+        else:
+            gname = f"🔹 بخش {gtype}"
+            
+        report += f"┌ {gname}\n└ 📊 تعداد دفعات شرکت: `{gcount}` بار\n\n"
+        
     await update.message.reply_text(report, parse_mode="Markdown")
 
 # ==========================================
 # ASYNCHRONOUS POLLING CORE LIFECYCLE
 # ==========================================
 def main():
-    if BOT_TOKEN == "YOUR_DEFAULT_TOKEN_IF_NOT_SET": return
+    """Initializes the bot engine with comprehensive secure command and callback routing."""
+    if BOT_TOKEN == "YOUR_DEFAULT_TOKEN_IF_NOT_SET": 
+        print("❌ خطای پیکربندی: BOT_TOKEN تنظیم نشده است!")
+        return
+        
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # 1. COMMAND REGISTRY
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("dice", dice_command))
@@ -2152,29 +2411,38 @@ def main():
     application.add_handler(CommandHandler("shop", shop_command))
     application.add_handler(CommandHandler("redeem", redeem_command))
 
+    # 2. CALLBACK QUERY ROUTING (Pattern-based security)
     application.add_handler(CallbackQueryHandler(handle_callbacks, pattern="^(pv_duel_start|pvduel_|gduel_|oduel_|user_check_event|wardrobe_)"))
     application.add_handler(CallbackQueryHandler(admin_buttons, pattern="^(admin_|setcat_|ev_|evrew_|evtype_)"))
     application.add_handler(CallbackQueryHandler(shop_callback, pattern="^(shopmain_|shopbuy_)"))
     
+    # 3. INTERMEDIATE TEXT PROCESSING FILTER (Anti-Spam & State Management)
     async def mid_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.message and update.message.text:
-            uid = update.effective_user.id
-            txt = update.message.text.strip()
+        if not update.message or not update.message.text: 
+            return
             
-            p_username = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
-            get_or_create_user(uid, p_username)
+        uid = update.effective_user.id
+        txt = update.message.text.strip()
+        p_username = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+        
+        # Ensure user exists in DB before any processing
+        get_or_create_user(uid, p_username)
             
-            if uid in ADMIN_STATES and ADMIN_STATES[uid] == "WAITING_FOR_LOGS_ID":
+        # Prioritize Admin State Machine Inputs
+        if uid in ADMIN_STATES:
+            state = ADMIN_STATES[uid]
+            if state == "WAITING_FOR_LOGS_ID":
                 del ADMIN_STATES[uid]
                 await handle_admin_logs_input(update, uid, txt)
                 return
                 
+        # Forward to general message processor
         await monitor_messages_and_inputs(update, context)
 
+    # Register message handler with text filter
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mid_filter))
 
     print("🚀 ربات فوق پیشرفته کلوب تاس همراه با قفل ضداسپم متوالی با موفقیت ران شد...")
     application.run_polling()
-
 if __name__ == "__main__":
     main()
